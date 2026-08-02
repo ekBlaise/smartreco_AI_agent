@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Agent runs — Admin — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="wrap section">
+
+  <div class="section-head">
+    <div>
+      <h1 style="font-size:1.7rem">Agent runs</h1>
+      <p class="muted" style="margin:0">
+        Every invocation of the LangGraph agent — which nodes it walked, how many
+        Mesh calls it spent, and whether it produced anything.
+      </p>
+    </div>
+    <a class="btn" href="/admin/products">← Products</a>
+  </div>
+
+  <div class="stats" style="margin-bottom:24px">
+    <div class="stat"><div class="n">{{ total_runs }}</div><div class="l">Agent runs</div></div>
+    <div class="stat"><div class="n">{{ total_llm_calls }}</div><div class="l">Mesh calls</div></div>
+    <div class="stat"><div class="n">{{ avg_latency_ms }}<span class="faint" style="font-size:1rem">ms</span></div><div class="l">Avg latency</div></div>
+    <div class="stat"><div class="n">{{ total_events }}</div><div class="l">Events tracked</div></div>
+    <div class="stat"><div class="n">{{ total_recos }}</div><div class="l">Recommendations</div></div>
+  </div>
+
+  <p class="faint" style="margin-bottom:16px">
+    {% if total_runs %}
+      {{ "%.1f"|format(total_events / total_runs) }} tracked actions per agent run —
+      the trigger gates are doing their job when this number stays well above 1.
+    {% endif %}
+  </p>
+
+  <div class="card table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>When</th><th>User</th><th>Trigger</th><th>Status</th>
+          <th>Path</th><th>Retrievals</th><th>Candidates</th>
+          <th>Mesh calls</th><th>Latency</th><th>Trace</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in runs %}
+          <tr>
+            <td class="faint" style="white-space:nowrap">{{ run.created_at.strftime('%d %b %H:%M:%S') }}</td>
+            <td class="mono">{{ run.user_id or '—' }}</td>
+            <td><code>{{ run.trigger }}</code></td>
+            <td>
+              {% if run.status == 'ok' %}<span class="tag green">ok</span>
+              {% elif run.status == 'empty' %}<span class="tag">empty</span>
+              {% else %}<span class="tag red" title="{{ run.error }}">{{ run.status }}</span>{% endif %}
+            </td>
+            <td class="mono" style="font-size:0.72rem">{{ (run.node_path or [])|join(' → ') }}</td>
+            <td>{{ run.retrieval_attempts }}</td>
+            <td>{{ run.candidates }}</td>
+            <td>{{ run.llm_calls }}</td>
+            <td>{{ run.latency_ms }}ms</td>
+            <td>
+              {% if run.trace_url %}
+                <a href="{{ run.trace_url }}" target="_blank" rel="noopener"
+                   style="color:var(--accent-text)">LangSmith ↗</a>
+              {% else %}<span class="faint">—</span>{% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="10" class="empty">
+              No agent runs yet. Browse the catalog as a signed-in user to trigger one.
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</div>
+{% endblock %}

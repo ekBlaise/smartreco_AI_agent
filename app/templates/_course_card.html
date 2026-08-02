@@ -1,0 +1,16 @@
+{# Reusable catalog card. Carries the data-* hooks tracker.js delegates from. #}
+<a class="course" href="/course/{{ product.slug }}"
+   data-product-id="{{ product.id }}"
+   data-track-category="{{ product.category }}"
+   data-track-surface="{{ surface|default('catalog') }}">
+  <div class="tags">
+    <span class="tag accent">{{ product.category }}</span>
+    <span class="tag">{{ product.level }}</span>
+  </div>
+  <h3>{{ product.title }}</h3>
+  <p class="desc">{{ product.description }}</p>
+  <div class="foot">
+    <span class="price">{{ product.price|money(product.currency) }}</span>
+    <span class="rating">{{ product.rating|stars }} {{ "%.1f"|format(product.rating) }}</span>
+  </div>
+</a>

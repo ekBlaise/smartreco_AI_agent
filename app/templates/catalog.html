@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Catalog — {{ app_name }}{% endblock %}
+{% block body_attrs %} data-track-page data-track-category="{{ category }}"{% endblock %}
+
+{% block content %}
+<div class="wrap section">
+
+  <div class="section-head">
+    <div>
+      <h1 style="font-size:1.7rem">Course catalog</h1>
+      <p class="muted" style="margin:0">{{ total }} course{{ '' if total == 1 else 's' }}{% if category %} in {{ category }}{% endif %}</p>
+    </div>
+  </div>
+
+  <form class="row card" method="get" action="/catalog" style="margin-bottom:22px">
+    <div style="flex:1;min-width:180px">
+      <label for="category">Category</label>
+      <select id="category" name="category" data-track-filter="category" onchange="this.form.submit()">
+        <option value="">All categories</option>
+        {% for c in categories %}
+          <option value="{{ c }}" {{ 'selected' if c == category }}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="flex:1;min-width:180px">
+      <label for="level">Level</label>
+      <select id="level" name="level" data-track-filter="level" onchange="this.form.submit()">
+        <option value="">Any level</option>
+        {% for l in ['beginner', 'intermediate', 'advanced'] %}
+          <option value="{{ l }}" {{ 'selected' if l == level }}>{{ l|capitalize }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if category or level %}
+      <div style="align-self:flex-end"><a class="btn" href="/catalog">Clear</a></div>
+    {% endif %}
+  </form>
+
+  {% if products %}
+    <div class="grid">
+      {% for product in products %}
+        {% with surface = 'catalog' %}{% include "_course_card.html" %}{% endwith %}
+      {% endfor %}
+    </div>
+
+    {% if page > 1 or has_next %}
+      <div class="row center" style="justify-content:center;margin-top:28px">
+        {% if page > 1 %}
+          <a class="btn" href="/catalog?category={{ category|urlencode }}&level={{ level|urlencode }}&page={{ page - 1 }}">← Previous</a>
+        {% endif %}
+        <span class="faint">Page {{ page }}</span>
+        {% if has_next %}
+          <a class="btn" href="/catalog?category={{ category|urlencode }}&level={{ level|urlencode }}&page={{ page + 1 }}">Next →</a>
+        {% endif %}
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="empty">No courses match those filters.</div>
+  {% endif %}
+
+</div>
+{% endblock %}

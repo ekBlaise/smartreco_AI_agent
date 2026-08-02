@@ -1,0 +1,51 @@
+# Secrets — NEVER commit these
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets/
+
+# Local data (SQLite fallback DB, Qdrant local storage, rendered digests)
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Celery
+celerybeat-schedule*
+*.pid
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+*.log
+logs/
+
+# Local editor/agent tooling
+.claude/

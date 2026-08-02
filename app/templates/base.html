@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+  <script defer src="/static/vendor/alpine.min.js"></script>
+</head>
+<body{% block body_attrs %}{% endblock %}>
+
+<header class="site">
+  <div class="wrap inner">
+    <a class="brand" href="/">Smart<span>Reco</span></a>
+
+    <form class="searchbar" action="/search" method="get" role="search">
+      <input type="search" name="q" value="{{ q|default('') }}"
+             placeholder="Search courses…" autocomplete="off" data-track-search>
+    </form>
+
+    <nav class="main">
+      <a href="/catalog" class="{{ 'active' if request.url.path == '/catalog' }}">Catalog</a>
+      {% if user %}
+        <a href="/dashboard" class="{{ 'active' if request.url.path == '/dashboard' }}">For you</a>
+        {% if user.is_admin %}
+          <a href="/admin/products" class="{{ 'active' if request.url.path.startswith('/admin') }}">Admin</a>
+        {% endif %}
+      {% endif %}
+    </nav>
+
+    <div class="spacer"></div>
+
+    {% if user %}
+      <span class="faint">{{ user.full_name or user.email }}</span>
+      <a class="btn small" href="/logout">Sign out</a>
+    {% else %}
+      <a class="btn small" href="/login">Sign in</a>
+      <a class="btn small primary" href="/register">Create account</a>
+    {% endif %}
+  </div>
+</header>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <div class="row">
+      <span>{{ app_name }} — behavioural AI recommendation agent.</span>
+      <div class="spacer"></div>
+      <span class="faint">Every AI call routed through Mesh API · retrieval grounded in Qdrant</span>
+    </div>
+  </div>
+</footer>
+
+<script defer src="/static/js/tracker.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ q or 'Search' }} — {{ app_name }}{% endblock %}
+{% block body_attrs %} data-track-page{% endblock %}
+
+{% block content %}
+<div class="wrap section">
+
+  <div class="section-head">
+    <div>
+      <h1 style="font-size:1.7rem">{% if q %}Results for “{{ q }}”{% else %}Search{% endif %}</h1>
+      {% if q %}<p class="muted" style="margin:0">{{ products|length }} match{{ '' if products|length == 1 else 'es' }}</p>{% endif %}
+    </div>
+  </div>
+
+  {% if q and products %}
+    <div class="grid">
+      {% for product in products %}
+        {% with surface = 'search' %}{% include "_course_card.html" %}{% endwith %}
+      {% endfor %}
+    </div>
+  {% elif q %}
+    <div class="empty">
+      <p>Nothing matched “{{ q }}”.</p>
+      <a class="btn" href="/catalog">Browse the full catalog</a>
+    </div>
+  {% else %}
+    <div class="empty">Type a topic in the search box above.</div>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if q %}
+<script>
+  // The search page is reached by form submit; record the executed search
+  // explicitly so a landed result page counts even if the input events were
+  // still inside the debounce window.
+  window.addEventListener("load", function () {
+    if (window.SmartReco) {
+      window.SmartReco.track("search", { query: {{ q|tojson }}, meta: { submitted: true } });
+    }
+  });
+</script>
+{% endif %}
+{% endblock %}

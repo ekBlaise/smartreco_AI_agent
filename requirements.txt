@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+# SmartReco — Behavioral AI Recommendation Agent
+# ---------------------------------------------------------------------------
+
+# --- Web framework (required by the challenge: Flask or FastAPI) ------------
+fastapi==0.141.1              # backend API + server-rendered Jinja2 pages
+uvicorn[standard]==0.52.1     # ASGI server
+jinja2==3.1.6                 # server-rendered templates
+python-multipart==0.0.32      # HTML form posts (login, admin product forms)
+itsdangerous==2.2.0           # signed flash-message cookies
+
+# --- LLM access: EVERY AI call is routed through Mesh API -------------------
+# Mesh is an OpenAI-compatible gateway, so the OpenAI SDK is the transport.
+openai==2.52.0                # OpenAI SDK pointed at https://api.meshapi.ai/v1
+langchain-openai==1.4.1       # ChatOpenAI / OpenAIEmbeddings wrappers (Mesh base_url)
+langchain-core==1.5.3         # messages, structured output, runnables
+
+# --- Agent orchestration (bonus: structured agent framework) ---------------
+langgraph==1.2.10             # explicit reasoning graph: profile -> retrieve -> grade -> refine -> generate
+
+# --- Observability (bonus: tracing) ----------------------------------------
+langsmith==0.10.15            # end-to-end traces of every agent run
+
+# --- Vector database --------------------------------------------------------
+qdrant-client==1.18.0         # semantic retrieval over the product catalog
+
+# --- Relational database ----------------------------------------------------
+sqlalchemy==2.0.51            # ORM
+psycopg[binary]==3.3.4        # PostgreSQL driver
+alembic==1.18.5               # schema migrations
+
+# --- Background jobs & scheduling (bonus: real scheduler) ------------------
+celery[redis]==5.6.3          # task queue: event flush, recommendation generation
+redis==6.4.0                  # broker + LLM/result cache + debounce locks (pinned <6.5 for kombu)
+
+# --- Auth / security --------------------------------------------------------
+bcrypt==5.0.0                 # password hashing
+PyJWT==2.13.0                 # session token in an httpOnly cookie
+email-validator==2.3.0        # email field validation
+
+# --- Config & utilities -----------------------------------------------------
+pydantic==2.13.1
+pydantic-settings==2.14.2     # environment-driven settings (.env)
+python-dotenv==1.1.1
+tenacity==9.1.4               # retry/backoff around network calls
+truststore==0.10.4            # verify TLS against the OS cert store (corporate proxies)
+
+# --- Testing ----------------------------------------------------------------
+pytest==9.1.1
+httpx==0.28.1                 # FastAPI TestClient transport
+fakeredis==2.37.0             # Redis substitute in tests (no live server needed)

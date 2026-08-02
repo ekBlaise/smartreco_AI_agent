@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}For you — {{ app_name }}{% endblock %}
+{% block body_attrs %} data-track-page{% endblock %}
+
+{% block content %}
+{# Single-quoted literal, not |tojson: tojson emits double quotes, which would
+   terminate this attribute early and stop Alpine initialising the whole panel.
+   status.status is a fixed slug, so quoting it directly is safe. #}
+<div class="wrap section" x-data="recoPanel('{{ status.status }}')">
+
+  <div class="section-head">
+    <div>
+      <h1 style="font-size:1.7rem">For you</h1>
+      <p class="muted" style="margin:0">
+        Built by an agent reading your activity — refreshes as your interests move.
+      </p>
+    </div>
+    <button class="btn" @click="refresh()" :disabled="busy">
+      <span x-text="busy ? 'Refreshing…' : 'Refresh now'"></span>
+    </button>
+  </div>
+
+  <div class="stats" style="margin-bottom:24px">
+    <div class="stat">
+      <div class="n" x-text="events">{{ status.events_tracked }}</div>
+      <div class="l">Actions tracked</div>
+    </div>
+    <div class="stat">
+      <div class="n"><span x-text="score">{{ status.behavior_score }}</span><span class="faint" style="font-size:1rem"> / {{ status.score_needed }}</span></div>
+      <div class="l">Interest signal</div>
+      {% set needed = status.score_needed or 1 %}
+      <div class="progress">
+        <div :style="`width:${Math.min(100, (score / {{ needed }}) * 100)}%`"
+             style="width:{{ [100, (status.behavior_score / needed * 100)|round|int]|min }}%"></div>
+      </div>
+    </div>
+    <div class="stat">
+      <div class="n">{{ history|length }}</div>
+      <div class="l">Versions generated</div>
+    </div>
+  </div>
+
+  {# Server-rendered first paint — visible before Alpine loads, swapped out on refresh. #}
+  <div x-show="!live">
+    {% if status.status == 'ready' %}
+      {% with reco = status.recommendation %}{% include "_reco_panel.html" %}{% endwith %}
+    {% else %}
+      <div class="card center" style="padding:48px 24px">
+        <div class="eyebrow faint" style="letter-spacing:.08em">
+          {{ 'Not enough signal yet' if status.status == 'insufficient_activity' else 'Working on it' }}
+        </div>
+        <p class="muted" style="max-width:52ch;margin:12px auto 20px">{{ status.message }}</p>
+        <a class="btn primary" href="/catalog">Browse the catalog</a>
+      </div>
+    {% endif %}
+  </div>
+
+  {# Client-rendered panel after a refresh. #}
+  <template x-if="live">
+    <div>
+      <template x-if="live.status === 'ready' && live.recommendation">
+        <section class="reco">
+          <div class="eyebrow">◆ Generated for you</div>
+          <h2 x-text="live.recommendation.headline"></h2>
+          <p class="narrative" x-text="live.recommendation.narrative"></p>
+          <p class="cta-line" x-text="live.recommendation.cta" x-show="live.recommendation.cta"></p>
+          <div class="reco-items">
+            <template x-for="(item, i) in live.recommendation.items" :key="item.product_id">
+              <a class="reco-item" :href="`/course/${item.slug}`"
+                 :data-product-id="item.product_id"
+                 data-track-click="reco_click"
+                 data-track-surface="recommendation">
+                <span class="reco-rank" x-text="i + 1"></span>
+                <span style="flex:1">
+                  <strong x-text="item.title"></strong>
+                  <p class="why" x-text="item.why_this"></p>
+                  <span class="meta">
+                    <span class="tag accent" x-text="item.category"></span>
+                    <span class="tag" x-text="item.level"></span>
+                    <span class="price" x-text="item.price ? `$${item.price}` : 'Free'"></span>
+                  </span>
+                </span>
+              </a>
+            </template>
+          </div>
+          <div class="row faint" style="margin-top:16px">
+            <span>Version <span x-text="live.recommendation.version"></span> ·
+              trigger: <code x-text="live.recommendation.trigger"></code></span>
+          </div>
+        </section>
+      </template>
+
+      <template x-if="live.status !== 'ready'">
+        <div class="card center" style="padding:48px 24px">
+          <div class="eyebrow faint" style="letter-spacing:.08em">Working on it</div>
+          <p class="muted" style="max-width:52ch;margin:12px auto 20px" x-text="live.message"></p>
+          <a class="btn primary" href="/catalog">Browse the catalog</a>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  <p class="alert error" x-show="error" x-cloak x-text="error" style="margin-top:18px"></p>
+
+  {% if history|length > 1 %}
+    <section class="section">
+      <div class="section-head"><h2 style="font-size:1.15rem">Earlier versions</h2></div>
+      <div class="card table-scroll">
+        <table>
+          <thead><tr><th>Version</th><th>Headline</th><th>Generated</th></tr></thead>
+          <tbody>
+            {% for h in history %}
+              <tr>
+                <td class="mono">v{{ h.version }}</td>
+                <td>{{ h.headline }}</td>
+                <td class="faint">{{ h.created_at.strftime('%d %b, %H:%M') }} UTC</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function recoPanel(initialStatus) {
+    return {
+      live: null,
+      busy: false,
+      error: "",
+      poller: null,
+      events: {{ status.events_tracked }},
+      score: {{ status.behavior_score }},
+
+      init() {
+        // Generation runs in a worker, so poll while something is in flight
+        // instead of blocking the request that asked for it.
+        if (initialStatus !== "ready") this.startPolling();
+      },
+
+      startPolling() {
+        if (this.poller) return;
+        var tries = 0;
+        this.poller = setInterval(async () => {
+          tries += 1;
+          var ready = await this.load();
+          if (ready || tries >= 12) this.stopPolling();
+        }, 5000);
+      },
+
+      stopPolling() {
+        clearInterval(this.poller);
+        this.poller = null;
+      },
+
+      async load() {
+        try {
+          var res = await fetch("/api/recommendations", { credentials: "same-origin" });
+          if (!res.ok) return false;
+          var data = await res.json();
+          this.events = data.events_tracked;
+          this.score = data.behavior_score;
+          if (data.status === "ready") {
+            this.live = data;
+            return true;
+          }
+          if (this.live) this.live = data;
+          return false;
+        } catch (e) {
+          return false;
+        }
+      },
+
+      async refresh() {
+        this.busy = true;
+        this.error = "";
+        try {
+          // Flush anything still queued so the agent reads the freshest activity.
+          if (window.SmartReco) window.SmartReco.flush();
+          var res = await fetch("/api/recommendations/refresh", {
+            method: "POST",
+            credentials: "same-origin"
+          });
+          if (!res.ok) throw new Error("Refresh failed (" + res.status + ")");
+          this.live = await res.json();
+          this.startPolling();
+        } catch (e) {
+          this.error = "Could not refresh right now. " + e.message;
+        } finally {
+          this.busy = false;
+        }
+      }
+    };
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Not found — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="wrap">
+  <div class="empty" style="padding:120px 24px">
+    <h1>That course isn't here.</h1>
+    <p class="muted">It may have been removed from the catalog.</p>
+    <a class="btn primary" href="/catalog">Browse the catalog</a>
+  </div>
+</div>
+{% endblock %}

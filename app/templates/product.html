@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ product.title }} — {{ app_name }}{% endblock %}
+{% block body_attrs %} data-track-page data-track-category="{{ product.category }}" data-track-level="{{ product.level }}"{% endblock %}
+
+{% block content %}
+{# data-track-view makes tracker.js record this as a product_view rather than a page_view. #}
+<div class="wrap section" data-product-id="{{ product.id }}" data-track-view
+     data-track-category="{{ product.category }}">
+
+  <a class="faint" href="/catalog?category={{ product.category|urlencode }}">← {{ product.category }}</a>
+
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:32px;margin-top:16px"
+       class="product-layout">
+
+    <div>
+      <div class="tags">
+        <span class="tag accent">{{ product.category }}</span>
+        <span class="tag">{{ product.level }}</span>
+        {% for tag in product.tags[:5] %}<span class="tag">{{ tag }}</span>{% endfor %}
+      </div>
+
+      <h1>{{ product.title }}</h1>
+      <div class="row muted" style="margin-bottom:20px">
+        <span class="rating">{{ product.rating|stars }} {{ "%.1f"|format(product.rating) }}</span>
+        <span>·</span>
+        <span>{{ "{:,}".format(product.enrollments) }} enrolled</span>
+        <span>·</span>
+        <span>{{ product.duration_hours|round|int }} hours</span>
+        {% if product.instructor %}<span>·</span><span>{{ product.instructor }}</span>{% endif %}
+      </div>
+
+      <p style="font-size:1.02rem;line-height:1.75">{{ product.description }}</p>
+    </div>
+
+    <aside>
+      <div class="card" style="position:sticky;top:82px">
+        <div class="price" style="font-size:1.9rem">{{ product.price|money(product.currency) }}</div>
+        <p class="faint" style="margin:6px 0 16px">One-time purchase · lifetime access</p>
+
+        <button class="btn primary" style="width:100%"
+                data-product-id="{{ product.id }}"
+                data-track-click="enroll_intent"
+                data-track-category="{{ product.category }}"
+                data-track-surface="product_page">
+          Enroll now
+        </button>
+
+        <p class="faint center" style="margin:14px 0 0">
+          Your interest here feeds your personalised recommendations.
+        </p>
+      </div>
+    </aside>
+  </div>
+
+  {% if related %}
+    <section class="section">
+      <div class="section-head"><h2>More in {{ product.category }}</h2></div>
+      <div class="grid">
+        {% for product in related %}
+          {% with surface = 'related' %}{% include "_course_card.html" %}{% endwith %}
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+</div>
+
+<style>
+  @media (max-width: 860px) {
+    .product-layout { grid-template-columns: 1fr !important; }
+  }
+</style>
+{% endblock %}

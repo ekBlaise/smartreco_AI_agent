@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Sign in — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="wrap">
+  <div class="auth-page card">
+    <h1 style="font-size:1.4rem">Sign in</h1>
+    <p class="muted" style="font-size:0.9rem">Your recommendations are waiting.</p>
+
+    {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+    <form method="post" action="/login">
+      <input type="hidden" name="next" value="{{ next }}">
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" name="email" required autocomplete="email" autofocus>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" name="password" required autocomplete="current-password">
+      </div>
+      <button class="btn primary" type="submit" style="width:100%">Sign in</button>
+    </form>
+
+    <p class="faint center" style="margin:18px 0 0">
+      No account? <a href="/register" style="color:var(--accent-text)">Create one</a>
+    </p>
+    <p class="faint center" style="margin:14px 0 0">
+      Demo: <code>user@smartreco.dev</code> / <code>user1234</code>
+    </p>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Create account — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="wrap">
+  <div class="auth-page card">
+    <h1 style="font-size:1.4rem">Create your account</h1>
+    <p class="muted" style="font-size:0.9rem">
+      Browse a few courses and the agent starts building your recommendations.
+    </p>
+
+    {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+    <form method="post" action="/register">
+      <div class="field">
+        <label for="full_name">Name</label>
+        <input id="full_name" type="text" name="full_name" autocomplete="name" autofocus>
+      </div>
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" name="email" required autocomplete="email">
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" name="password" required minlength="8"
+               autocomplete="new-password">
+        <p class="faint" style="margin:6px 0 0">At least 8 characters.</p>
+      </div>
+      <button class="btn primary" type="submit" style="width:100%">Create account</button>
+    </form>
+
+    <p class="faint center" style="margin:18px 0 0">
+      Already registered? <a href="/login" style="color:var(--accent-text)">Sign in</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

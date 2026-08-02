@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Products — Admin — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="wrap section" x-data="{ editing: null, creating: false }">
+
+  <div class="section-head">
+    <div>
+      <h1 style="font-size:1.7rem">Product catalog</h1>
+      <p class="muted" style="margin:0">
+        Every save writes to PostgreSQL <em>and</em> Qdrant. Rows out of sync are re-pushed automatically.
+      </p>
+    </div>
+    <div class="row">
+      <a class="btn" href="/admin/agent-runs">Agent runs →</a>
+      <button class="btn primary" @click="creating = true">Add product</button>
+    </div>
+  </div>
+
+  {% if notice %}<div class="alert ok">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  <div class="stats" style="margin-bottom:24px">
+    <div class="stat">
+      <div class="n">{{ sync.products }}</div>
+      <div class="l">Products in SQL</div>
+    </div>
+    <div class="stat">
+      <div class="n">{{ sync.vector_points if sync.vector_ok else '—' }}</div>
+      <div class="l">Vectors in Qdrant</div>
+    </div>
+    <div class="stat">
+      <div class="n">
+        {% if sync.in_sync %}<span style="color:var(--green)">In sync</span>
+        {% else %}<span style="color:var(--red)">{{ sync.pending_sync }} pending</span>{% endif %}
+      </div>
+      <div class="l">Dual-write status</div>
+    </div>
+    <div class="stat" style="display:flex;align-items:center">
+      <form method="post" action="/admin/resync" style="width:100%">
+        <button class="btn" style="width:100%" {{ 'disabled' if sync.in_sync }}>Force re-index</button>
+      </form>
+    </div>
+  </div>
+
+  {% if not sync.vector_ok and sync.vector_error %}
+    <div class="alert error">Qdrant unreachable: {{ sync.vector_error }}</div>
+  {% endif %}
+
+  <form class="row card" method="get" action="/admin/products" style="margin-bottom:18px">
+    <input type="search" name="q" value="{{ q }}" placeholder="Filter by title…" style="flex:1">
+    <button class="btn">Search</button>
+  </form>
+
+  <div class="card table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Title</th><th>Category</th><th>Level</th><th>Price</th>
+          <th>Vector</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in products %}
+          <tr>
+            <td>
+              <strong>{{ p.title }}</strong>
+              {% if not p.is_active %}<span class="tag red" style="margin-left:6px">hidden</span>{% endif %}
+              <div class="faint mono">{{ p.slug }}</div>
+            </td>
+            <td>{{ p.category }}</td>
+            <td>{{ p.level }}</td>
+            <td>{{ p.price|money(p.currency) }}</td>
+            <td>
+              {% if p.vector_in_sync %}
+                <span class="tag green">synced</span>
+              {% elif p.vector_sync_error %}
+                <span class="tag red" title="{{ p.vector_sync_error }}">failed</span>
+              {% else %}
+                <span class="tag">pending</span>
+              {% endif %}
+            </td>
+            <td style="white-space:nowrap;text-align:right">
+              <button class="btn small" @click='editing = {{ {
+                "id": p.id, "title": p.title, "description": p.description,
+                "category": p.category, "level": p.level, "price": p.price|float,
+                "instructor": p.instructor, "duration_hours": p.duration_hours,
+                "rating": p.rating, "tags": (p.tags or [])|join(", "),
+                "is_active": p.is_active
+              }|tojson }}'>Edit</button>
+              <form method="post" action="/admin/products/{{ p.id }}/delete" style="display:inline"
+                    onsubmit="return confirm('Delete “{{ p.title|e }}” from both stores?')">
+                <button class="btn small danger">Delete</button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="empty">No products yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {# --- create / edit modal ------------------------------------------------ #}
+  <template x-if="creating || editing">
+    <div class="modal-backdrop" @click.self="creating = false; editing = null">
+      <div class="modal">
+        <h2 x-text="editing ? 'Edit product' : 'New product'"></h2>
+        <p class="faint" style="margin-top:-4px">
+          Saving re-embeds the description through Mesh and upserts the vector into Qdrant.
+        </p>
+
+        <form method="post" :action="editing ? `/admin/products/${editing.id}` : '/admin/products'">
+          <div class="field">
+            <label>Title</label>
+            <input name="title" required minlength="3" :value="editing ? editing.title : ''">
+          </div>
+          <div class="field">
+            <label>Description</label>
+            <textarea name="description" x-text="editing ? editing.description : ''"></textarea>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Category</label>
+              <input name="category" required list="category-options" :value="editing ? editing.category : ''">
+              <datalist id="category-options">
+                {% for c in products|map(attribute='category')|unique %}<option value="{{ c }}">{% endfor %}
+              </datalist>
+            </div>
+            <div class="field">
+              <label>Level</label>
+              <select name="level">
+                {% for l in ['beginner', 'intermediate', 'advanced'] %}
+                  <option value="{{ l }}" :selected="editing && editing.level === '{{ l }}'">{{ l }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Price (USD)</label>
+              <input name="price" type="number" step="0.01" min="0" :value="editing ? editing.price : 0">
+            </div>
+            <div class="field">
+              <label>Duration (hours)</label>
+              <input name="duration_hours" type="number" step="0.5" min="0"
+                     :value="editing ? editing.duration_hours : 0">
+            </div>
+            <div class="field">
+              <label>Rating (0–5)</label>
+              <input name="rating" type="number" step="0.1" min="0" max="5"
+                     :value="editing ? editing.rating : 0">
+            </div>
+          </div>
+          <div class="field">
+            <label>Instructor</label>
+            <input name="instructor" :value="editing ? editing.instructor : ''">
+          </div>
+          <div class="field">
+            <label>Tags (comma separated)</label>
+            <input name="tags" :value="editing ? editing.tags : ''"
+                   placeholder="langgraph, agents, python">
+          </div>
+          <div class="field row">
+            <input type="checkbox" name="is_active" value="true" style="width:auto"
+                   :checked="editing ? editing.is_active : true">
+            <label style="margin:0">Visible in the catalog</label>
+          </div>
+
+          <div class="row" style="justify-content:flex-end;margin-top:8px">
+            <button type="button" class="btn" @click="creating = false; editing = null">Cancel</button>
+            <button class="btn primary" type="submit">Save to both stores</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </template>
+
+</div>
+{% endblock %}

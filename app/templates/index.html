@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ app_name }} — courses that find you{% endblock %}
+{% block body_attrs %} data-track-page{% endblock %}
+
+{% block content %}
+<div class="wrap">
+
+  <section class="hero">
+    <h1>Courses that learn what you're actually after.</h1>
+    <p>
+      Browse the catalog and an AI agent reads the thread running through it —
+      what you search, what you open, where you linger — then recommends the
+      courses that fit your path, and tells you why.
+    </p>
+    <div class="row" style="margin-top:22px">
+      <a class="btn primary" href="/catalog">Browse {{ total_courses }} courses</a>
+      {% if not user %}<a class="btn" href="/register">Create an account</a>{% endif %}
+    </div>
+  </section>
+
+  {% if recommendation %}
+    <section class="section">
+      {% with reco = recommendation %}{% include "_reco_panel.html" %}{% endwith %}
+    </section>
+  {% elif user %}
+    <section class="section">
+      <div class="card">
+        <div class="eyebrow faint">Your recommendations</div>
+        <p class="muted" style="margin:8px 0 0">
+          Nothing yet — browse a few courses and the agent will build you a
+          personalised set. <a href="/dashboard" style="color:var(--accent-text)">See progress →</a>
+        </p>
+      </div>
+    </section>
+  {% endif %}
+
+  <section class="section">
+    <div class="section-head">
+      <h2>Most enrolled</h2>
+      <a class="btn small" href="/catalog">View all →</a>
+    </div>
+    <div class="grid">
+      {% for product in featured %}
+        {% with surface = 'home_featured' %}{% include "_course_card.html" %}{% endwith %}
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>Browse by category</h2></div>
+    <div class="row">
+      {% for category in categories %}
+        <a class="tag" href="/catalog?category={{ category|urlencode }}"
+           data-track-filter="category">{{ category }}</a>
+      {% endfor %}
+    </div>
+  </section>
+
+</div>
+{% endblock %}

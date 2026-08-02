@@ -1,0 +1,36 @@
+{# The agent's output. Rendered on the home page and the dashboard. #}
+<section class="reco">
+  <div class="eyebrow">◆ Generated for you</div>
+  <h2>{{ reco.headline }}</h2>
+  <p class="narrative">{{ reco.narrative }}</p>
+  {% if reco.cta %}<p class="cta-line">{{ reco.cta }}</p>{% endif %}
+
+  <div class="reco-items">
+    {% for item in reco['items'] %}
+      <a class="reco-item" href="/course/{{ item.slug }}"
+         data-product-id="{{ item.product_id }}"
+         data-track-click="reco_click"
+         data-track-category="{{ item.category }}"
+         data-track-surface="recommendation">
+        <span class="reco-rank">{{ loop.index }}</span>
+        <span style="flex:1">
+          <strong>{{ item.title }}</strong>
+          <p class="why">{{ item.why_this }}</p>
+          <span class="meta">
+            <span class="tag accent">{{ item.category }}</span>
+            <span class="tag">{{ item.level }}</span>
+            <span class="price">{{ item.price|money(item.currency) }}</span>
+            <span class="rating">{{ item.rating|stars }}</span>
+          </span>
+        </span>
+      </a>
+    {% endfor %}
+  </div>
+
+  <div class="row faint" style="margin-top:16px">
+    <span>Version {{ reco.version }} · trigger: <code>{{ reco.trigger }}</code></span>
+    {% if reco.interests %}<span>· reading: {{ reco.interests|join(', ') }}</span>{% endif %}
+    <div class="spacer"></div>
+    <span>{{ reco['items']|length }} course{{ '' if reco['items']|length == 1 else 's' }} · grounded in the live catalog</span>
+  </div>
+</section>
