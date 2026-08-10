@@ -96,3 +96,53 @@ def send_digest(to_email: str, subject: str, html: str) -> dict[str, Any]:
 
     logger.info("Digest sent to %s", to_email)
     return {"sent": True, "dry_run": False}
+
+
+def main() -> int:
+    """Send one test email, so SMTP can be verified without waiting for Beat.
+
+        python -m app.workers.email --to you@example.com
+
+    Prints the resolved settings (never the password) and the exact SMTP error
+    when it fails, because "digest not delivered" a day later is a miserable way
+    to discover a typo in a port number.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Send a SmartReco test email.")
+    parser.add_argument("--to", required=True, help="recipient address")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    mode = "SSL" if settings.smtp_port == 465 else (
+        "STARTTLS" if settings.smtp_starttls else "plaintext"
+    )
+    print(f"host     : {settings.smtp_host or '(unset — will write to disk instead)'}")
+    print(f"port     : {settings.smtp_port} ({mode})")
+    print(f"user     : {settings.smtp_user or '(none — sending unauthenticated)'}")
+    print(f"password : {'set' if settings.smtp_password else 'NOT SET'}")
+    print(f"from     : {settings.smtp_from}")
+    print(f"to       : {args.to}\n")
+
+    result = send_digest(
+        args.to,
+        "SmartReco SMTP test",
+        "<html><body style='font-family:sans-serif'>"
+        "<h2>SmartReco SMTP works</h2>"
+        "<p>If you are reading this in your inbox, the daily digest will send.</p>"
+        "</body></html>",
+    )
+
+    if result.get("sent"):
+        print("Sent. Check the inbox (and the spam folder).")
+        return 0
+    if result.get("dry_run"):
+        print(f"SMTP is not configured, so it was written to {result['path']}")
+        print("Set SMTP_HOST in .env to send for real.")
+        return 1
+    print(f"FAILED: {result.get('error')}")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

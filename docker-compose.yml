@@ -73,6 +73,18 @@ services:
       redis: {condition: service_healthy}
     volumes: [./data:/app/data]
 
+  # Optional local mail catcher: verify the digest end to end without putting
+  # real credentials anywhere. Start it with:
+  #   docker compose up -d mailpit
+  # then set SMTP_HOST=localhost and SMTP_PORT=1025 in .env (no user/password)
+  # and read the mail at http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    profiles: ["mail"]
+
 volumes:
   pgdata:
   qdrantdata:
