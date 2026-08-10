@@ -407,13 +407,35 @@ def recommendation_status(session: Session, audience: Audience) -> dict[str, Any
             ),
         }
 
+    # "The agent is reading your activity" was shown for every state that was
+    # not `ready`, including the common one where the gates have looked at the
+    # behaviour and decided it is not worth a model call yet. That reads as a
+    # spinner that never resolves. Say which it actually is.
+    short = settings.reco_score_threshold - profile.score
+    if short > 0:
+        return {
+            "status": "insufficient_activity",
+            "recommendation": None,
+            "events_tracked": profile.event_count,
+            "behavior_score": profile.score,
+            "score_needed": settings.reco_score_threshold,
+            "message": (
+                f"{short} more point{'s' if short != 1 else ''} of interest signal and the "
+                "agent has enough to write you a recommendation. Open a course, "
+                "search for a topic, or spend a minute reading one."
+            ),
+        }
+
     return {
         "status": "pending",
         "recommendation": None,
         "events_tracked": profile.event_count,
         "behavior_score": profile.score,
         "score_needed": settings.reco_score_threshold,
-        "message": "The agent is reading your activity — this refreshes automatically.",
+        "message": (
+            "Enough signal — the agent is writing your recommendation now. "
+            "This updates on its own, usually within a minute."
+        ),
     }
 
 

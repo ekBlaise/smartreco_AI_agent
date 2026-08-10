@@ -339,3 +339,22 @@ def test_healthz_reports_the_stack(client):
     assert body["ok"] is True
     assert body["mesh_configured"] is True
     assert body["vector_store"]["ok"] is True
+
+
+def test_the_panel_says_which_kind_of_waiting_it_is(logged_in, db, learner, catalog):
+    """'The agent is reading your activity' for a user the gates have declined
+    reads as a spinner that never resolves. Below threshold must say so."""
+    from app.audience import Audience
+    from app.service import recommendation_status
+    from tests.test_triggers import add_events
+
+    # Enough events to be past reco_min_events, but well short of the score.
+    add_events(db, learner, catalog, ("product_view", 0, None), ("page_view", None, None),
+               ("page_view", None, None), ("scroll_depth", None, None))
+    db.commit()
+
+    status = recommendation_status(db, Audience(user_id=learner.id))
+
+    assert status["status"] == "insufficient_activity"
+    assert "more point" in status["message"]
+    assert "reading your activity" not in status["message"]
