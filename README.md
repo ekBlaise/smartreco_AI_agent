@@ -18,31 +18,31 @@ The agent then profiles their intent, plans retrieval queries, searches Qdrant, 
 
 ```mermaid
 flowchart TD
-    subgraph browser["Browser · Jinja2 + Alpine.js"]
-        T["tracker.js<br/>batched · throttled · sendBeacon on exit"]
-        P["&quot;Your Signal&quot; panel<br/>live feed + recommendation"]
+    subgraph browser["Browser - Jinja2 and Alpine.js"]
+        T["tracker.js<br/>batched, throttled, sendBeacon on exit"]
+        P["Your Signal panel<br/>live feed and recommendation"]
     end
 
-    T -->|"POST /api/events/batch<br/>202, no DB write"| ING["Ingest endpoint"]
+    T -->|"POST /api/events/batch - 202, no DB write"| ING["Ingest endpoint"]
     ING --> BUF[("Redis<br/>event buffer")]
-    BUF -->|"bulk insert every 10s<br/>Celery Beat, or in-process drain"| PG[("PostgreSQL<br/>events")]
+    BUF -->|"bulk insert every 10s"| PG[("PostgreSQL<br/>events")]
 
-    ING --> GATE{"Trigger gates<br/><b>no LLM call</b>"}
-    GATE -->|"score · signature<br/>cooldown · single-flight"| DECIDE{"all pass?"}
-    DECIDE -->|no| SKIP["counted as suppressed<br/>shown on /admin"]
-    DECIDE -->|yes| DISPATCH["Celery worker<br/>(or in-process fallback)"]
+    ING --> GATE{"Trigger gates<br/>no LLM call"}
+    GATE -->|"score, signature,<br/>cooldown, single-flight"| DECIDE{"All four pass?"}
+    DECIDE -->|"no"| SKIP["Counted as suppressed<br/>shown on /admin"]
+    DECIDE -->|"yes"| DISPATCH["Celery worker<br/>or in-process fallback"]
 
     DISPATCH --> AGENT["LangGraph agent"]
-    AGENT <-->|"chat + embeddings"| MESH["Mesh API"]
+    AGENT <-->|"chat and embeddings"| MESH["Mesh API"]
     AGENT <-->|"semantic retrieval"| QD[("Qdrant<br/>course vectors")]
-    AGENT --> STORE[("PostgreSQL<br/>recommendations · items · agent_runs")]
+    AGENT --> STORE[("PostgreSQL<br/>recommendations, items, agent_runs")]
 
     STORE --> PUB["Redis pub/sub"]
     PUB -->|"SSE /api/signal/stream"| P
     STORE --> DASH["/dashboard"]
     STORE --> DIGEST["Celery Beat 16:00<br/>personalised email"]
 
-    ADMIN["Admin · product CRUD"] -->|"dual-write"| PG
+    ADMIN["Admin - product CRUD"] -->|"dual-write"| PG
     ADMIN -->|"embed via Mesh"| QD
 
     AGENT -.->|"traces"| LS["LangSmith"]
@@ -296,23 +296,26 @@ An explicit LangGraph state machine, not a prompt chain:
 
 ```mermaid
 flowchart LR
-    START(["behaviour<br/>passed the gates"]) --> PB
+    START(["Behaviour passed<br/>the trigger gates"]) --> PB
 
-    PB["<b>profile_behavior</b><br/><i>Mesh call</i><br/>activity → interests,<br/>skill level, intent"]
-    PQ["<b>plan_queries</b><br/>no model call<br/>2–4 queries + level filters"]
-    RT["<b>retrieve</b><br/>Qdrant fan-out, RRF fusion,<br/>owned courses dropped"]
-    GC["<b>grade_candidates</b><br/><i>Mesh call</i><br/>score 0–1, then MMR diversify"]
-    RF["<b>refine_queries</b><br/><i>Mesh call</i><br/>rewrite from grader feedback"]
-    GN["<b>generate</b><br/><i>Mesh call</i><br/>headline, narrative,<br/>per-course reason"]
-    FN["<b>finalize</b><br/>drop invented + owned ids,<br/>strip internal ids, persist"]
-    DONE(["stored + pushed<br/>to the browser"])
+    PB["profile_behavior<br/>Mesh call<br/>activity to interests,<br/>skill level, intent"]
+    PQ["plan_queries<br/>no model call<br/>2-4 queries and level filters"]
+    RT["retrieve<br/>Qdrant fan-out, RRF fusion,<br/>owned courses dropped"]
+    GC["grade_candidates<br/>Mesh call<br/>score 0-1, then MMR diversify"]
+    RF["refine_queries<br/>Mesh call<br/>rewrite from grader feedback"]
+    GN["generate<br/>Mesh call<br/>headline, narrative,<br/>per-course reason"]
+    FN["finalize<br/>drop invented and owned ids,<br/>strip internal ids, persist"]
+    DONE(["Stored and pushed<br/>to the browser"])
 
-    PB --> PQ --> RT --> GC
+    PB --> PQ
+    PQ --> RT
+    RT --> GC
     GC -->|"enough strong candidates"| GN
     GC -->|"weak, attempts remain"| RF
-    GC -->|"budget spent — best of a bad set"| GN
+    GC -->|"budget spent, best of a bad set"| GN
     RF --> RT
-    GN --> FN --> DONE
+    GN --> FN
+    FN --> DONE
 
     classDef llm fill:#312e81,stroke:#6366f1,color:#e0e7ff
     classDef plain fill:#1f2937,stroke:#4b5563,color:#e5e7eb
@@ -648,7 +651,7 @@ erDiagram
         int id PK
         string email UK
         string password_hash
-        string role "user | admin"
+        string role "user or admin"
     }
     PRODUCTS {
         int id PK
@@ -708,7 +711,7 @@ erDiagram
         int id PK
         int user_id FK
         string trigger
-        string status "ok | empty | error | billing"
+        string status "ok, empty, error or billing"
         json node_path "which nodes ran"
         int llm_calls
         int latency_ms
