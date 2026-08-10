@@ -29,24 +29,43 @@ and finally writes a headline, a short narrative referencing what this specific
 person did, and a per-course reason. Anything it invents is dropped before it
 reaches the database.
 
-```
-Browser (Jinja2 + Alpine.js)
-   │  tracker.js — batched, throttled, sendBeacon on exit
-   ▼
-POST /api/events/batch ──► Redis buffer ──(Celery Beat, 10s)──► PostgreSQL
-   │
-   ├─► trigger gates: score · signature · cooldown · single-flight lock   ← no LLM
-   │
-   ▼ (only when all four pass)
-Celery task ──► LangGraph agent ──► Mesh API (chat + embeddings)
-                     │                    │
-                     │                    └─► Qdrant (semantic retrieval)
-                     ▼
-        PostgreSQL: recommendations + items + agent_runs
-                     │
-                     ├─► Redis pub/sub ──► SSE ──► live "Your Signal" panel
-                     ├─► rendered on /dashboard
-                     └─► Celery Beat 16:00 ──► personalised email digest
+### Architecture
+
+```mermaid
+flowchart TD
+    subgraph browser["Browser · Jinja2 + Alpine.js"]
+        T["tracker.js<br/>batched · throttled · sendBeacon on exit"]
+        P["&quot;Your Signal&quot; panel<br/>live feed + recommendation"]
+    end
+
+    T -->|"POST /api/events/batch<br/>202, no DB write"| ING["Ingest endpoint"]
+    ING --> BUF[("Redis<br/>event buffer")]
+    BUF -->|"bulk insert every 10s<br/>Celery Beat, or in-process drain"| PG[("PostgreSQL<br/>events")]
+
+    ING --> GATE{"Trigger gates<br/><b>no LLM call</b>"}
+    GATE -->|"score · signature<br/>cooldown · single-flight"| DECIDE{"all pass?"}
+    DECIDE -->|no| SKIP["counted as suppressed<br/>shown on /admin"]
+    DECIDE -->|yes| DISPATCH["Celery worker<br/>(or in-process fallback)"]
+
+    DISPATCH --> AGENT["LangGraph agent"]
+    AGENT <-->|"chat + embeddings"| MESH["Mesh API"]
+    AGENT <-->|"semantic retrieval"| QD[("Qdrant<br/>course vectors")]
+    AGENT --> STORE[("PostgreSQL<br/>recommendations · items · agent_runs")]
+
+    STORE --> PUB["Redis pub/sub"]
+    PUB -->|"SSE /api/signal/stream"| P
+    STORE --> DASH["/dashboard"]
+    STORE --> DIGEST["Celery Beat 16:00<br/>personalised email"]
+
+    ADMIN["Admin · product CRUD"] -->|"dual-write"| PG
+    ADMIN -->|"embed via Mesh"| QD
+
+    AGENT -.->|"traces"| LS["LangSmith"]
+
+    classDef store fill:#1f2937,stroke:#4b5563,color:#e5e7eb
+    classDef ext fill:#312e81,stroke:#6366f1,color:#e0e7ff
+    class BUF,PG,QD,STORE store
+    class MESH,LS ext
 ```
 
 ---
@@ -348,14 +367,30 @@ creation during checkout — go through the same validation.
 
 An explicit LangGraph state machine, not a prompt chain:
 
-```
-profile_behavior → plan_queries → retrieve → grade_candidates
-                                     ▲              │
-                                     │              ▼
-                              refine_queries ◄─ enough good matches?
-                                                    │ yes
-                                                    ▼
-                                              generate → finalize
+```mermaid
+flowchart LR
+    START(["behaviour<br/>passed the gates"]) --> PB
+
+    PB["<b>profile_behavior</b><br/><i>Mesh call</i><br/>activity → interests,<br/>skill level, intent"]
+    PQ["<b>plan_queries</b><br/>no model call<br/>2–4 queries + level filters"]
+    RT["<b>retrieve</b><br/>Qdrant fan-out, RRF fusion,<br/>owned courses dropped"]
+    GC["<b>grade_candidates</b><br/><i>Mesh call</i><br/>score 0–1, then MMR diversify"]
+    RF["<b>refine_queries</b><br/><i>Mesh call</i><br/>rewrite from grader feedback"]
+    GN["<b>generate</b><br/><i>Mesh call</i><br/>headline, narrative,<br/>per-course reason"]
+    FN["<b>finalize</b><br/>drop invented + owned ids,<br/>strip internal ids, persist"]
+    DONE(["stored + pushed<br/>to the browser"])
+
+    PB --> PQ --> RT --> GC
+    GC -->|"enough strong candidates"| GN
+    GC -->|"weak, attempts remain"| RF
+    GC -->|"budget spent — best of a bad set"| GN
+    RF --> RT
+    GN --> FN --> DONE
+
+    classDef llm fill:#312e81,stroke:#6366f1,color:#e0e7ff
+    classDef plain fill:#1f2937,stroke:#4b5563,color:#e5e7eb
+    class PB,GC,RF,GN llm
+    class PQ,RT,FN plain
 ```
 
 | Node | What it does | Mesh call? |
@@ -606,6 +641,40 @@ Set `SMTP_HOST`/`SMTP_USER`/`SMTP_PASSWORD` to actually send.
 
 ---
 
+## Submitting this
+
+Everything the automated checks look for is in the repo:
+
+| Requirement | Where |
+|---|---|
+| Public GitHub repository with all the code | this repo — it is its own git root, not a subfolder of another project |
+| Backend is Python (FastAPI) | [`app/api/main.py`](app/api/main.py) |
+| `requirements.txt` lists a web framework and an LLM client | `fastapi==0.141.1`, `openai==2.52.0` |
+| Every LLM/AI call goes through Mesh API | [`app/llm/mesh.py`](app/llm/mesh.py) is the only place a model client is built — chat *and* embeddings |
+| `README.md` — what, architecture, how to run, bonuses | this file |
+| `.gitignore` ignores `.env` | line 2 of [`.gitignore`](.gitignore) |
+| No secrets committed | verified: the only `rsk_` strings tracked are `rsk_your_key_here` in `.env.example` and a fake test key in `conftest.py` |
+| CI workflow | [`.github/workflows/smartreco-checks.yml`](.github/workflows/smartreco-checks.yml), downloaded from the hackathon URL unmodified |
+
+### Before you push
+
+1. Create the public repository and push this directory (it is already a git
+   root — a workflow inside a subfolder of a larger repo is never run by GitHub
+   Actions).
+2. Add two repository secrets under **Settings → Secrets and variables → Actions**:
+   - `MESH_API_KEY` — your `rsk_...` key
+   - `SUBMISSION_TOKEN` — from your hackathon dashboard
+3. Push. The checks run on every push; results appear in the Actions tab.
+
+Confirm nothing secret is going with it:
+
+```bash
+git ls-files | xargs grep -l "rsk_[A-Za-z0-9]"   # only .env.example and conftest.py
+git ls-files | grep -x ".env"                     # must print nothing
+```
+
+---
+
 ## Bonus features implemented
 
 **⭐ Structured agent framework — LangGraph.** [`app/agent/graph.py`](app/agent/graph.py)
@@ -667,6 +736,97 @@ tests/          203 tests, no network required
 ```
 
 ## Data model
+
+```mermaid
+erDiagram
+    USERS ||--o{ EVENTS : "generates"
+    USERS ||--o{ RECOMMENDATIONS : "receives"
+    USERS ||--o{ ENROLLMENTS : "owns"
+    USERS ||--o{ CART_ITEMS : "holds"
+    USERS ||--o{ AGENT_RUNS : "triggers"
+    PRODUCTS ||--o{ EVENTS : "is acted on"
+    PRODUCTS ||--o{ RECOMMENDATION_ITEMS : "is recommended in"
+    PRODUCTS ||--o{ ENROLLMENTS : "is bought in"
+    PRODUCTS ||--o{ CART_ITEMS : "sits in"
+    RECOMMENDATIONS ||--|{ RECOMMENDATION_ITEMS : "contains"
+    RECOMMENDATIONS ||--o| AGENT_RUNS : "was produced by"
+
+    USERS {
+        int id PK
+        string email UK
+        string password_hash
+        string role "user | admin"
+    }
+    PRODUCTS {
+        int id PK
+        string slug UK
+        string title
+        string category "indexed"
+        string level "indexed"
+        numeric price
+        json curriculum
+        string embedding_hash "proves Qdrant is current"
+        string payload_hash "cheap metadata-only resync"
+    }
+    EVENTS {
+        int id PK
+        int user_id FK "null when signed out"
+        string session_id "who, when signed out"
+        string type "what"
+        int product_id FK
+        string query
+        int dwell_ms
+        int weight "drives the trigger score"
+        json meta
+        datetime occurred_at "when it happened"
+        datetime ingested_at "when it was stored"
+    }
+    RECOMMENDATIONS {
+        int id PK
+        int user_id FK "null for a guest"
+        string session_id "set for a guest"
+        int version "per owner"
+        string headline
+        text narrative
+        string signature_hash "the behaviour it was written for"
+        bool is_current
+    }
+    RECOMMENDATION_ITEMS {
+        int id PK
+        int recommendation_id FK
+        int product_id FK
+        int rank
+        text why_this "per-course persuasion"
+        float relevance_score
+    }
+    ENROLLMENTS {
+        int id PK
+        int user_id FK "null for a guest"
+        string session_id "set for a guest"
+        int product_id FK
+    }
+    CART_ITEMS {
+        int id PK
+        string session_id "keyed by session, not user"
+        int user_id FK "filled in once known"
+        int product_id FK
+    }
+    AGENT_RUNS {
+        int id PK
+        int user_id FK
+        string trigger
+        string status "ok | empty | error | billing"
+        json node_path "which nodes ran"
+        int llm_calls
+        int latency_ms
+        string trace_url "LangSmith"
+    }
+```
+
+Indexes match the only two access patterns: `(user_id, occurred_at)` and
+`(session_id, occurred_at)` on events, `(user_id, created_at)` on
+recommendations.
+
 
 | Table | Purpose |
 |---|---|
