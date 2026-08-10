@@ -22,6 +22,7 @@ from app.cache import (
     acquire_lock,
     cache_get_json,
     cache_set_json,
+    reco_cooldown_key,
     reco_queued_key,
     release_lock,
 )
@@ -124,6 +125,20 @@ def _maybe_queue_generation(
     Enqueueing is deduped separately: a burst of batches sets one short-lived
     "queued" marker between them, so ten rapid flushes become one task.
     """
+    # Cheap gates first, and all of them are Redis reads. Building the
+    # behaviour profile costs a 400-row event query plus a product lookup, and
+    # it runs on the *request* path — so it must not run for the many batches
+    # whose answer is already decided: inside a cooldown, already queued, or
+    # Mesh backed off. Only when none of those apply is the profile worth
+    # computing.
+    if cache_get_json(reco_cooldown_key(audience.key)):
+        return
+
+    blocked = mesh.unavailable_reason()
+    if blocked:
+        logger.debug("Skipping generation for %s: %s", audience.key, blocked)
+        return
+
     try:
         decision = triggers.evaluate(db, audience, acquire=False)
     except Exception:
@@ -131,11 +146,6 @@ def _maybe_queue_generation(
         return
 
     if not decision.should_generate:
-        return
-
-    blocked = mesh.unavailable_reason()
-    if blocked:
-        logger.debug("Skipping generation for %s: %s", audience.key, blocked)
         return
 
     if not acquire_lock(reco_queued_key(audience.key), QUEUE_DEDUPE_SECONDS):

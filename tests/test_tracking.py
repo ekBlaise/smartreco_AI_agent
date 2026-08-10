@@ -150,3 +150,31 @@ def test_event_for_a_deleted_product_is_kept_without_the_fk(client, catalog, db)
 
     assert result["flushed"] == 1
     assert db.scalar(select(Event)).product_id is None
+
+
+def test_the_hot_path_skips_the_profile_query_during_a_cooldown(
+    logged_in, catalog, db, learner, fake_redis, monkeypatch
+):
+    """Building the behaviour profile costs a 400-row query and runs before the
+    response. During a cooldown the answer is already decided, so it must not
+    run at all."""
+    from app.api.routes import events as events_route
+    from app.audience import Audience
+    from app.cache import cache_set_json, reco_cooldown_key
+
+    cache_set_json(reco_cooldown_key(Audience(user_id=learner.id).key), True, 600)
+
+    calls: list = []
+    real = events_route.triggers.evaluate
+    monkeypatch.setattr(
+        events_route.triggers, "evaluate",
+        lambda *a, **k: (calls.append(1), real(*a, **k))[1],
+    )
+
+    response = logged_in.post(
+        "/api/events/batch",
+        json={"events": [{"type": "product_view", "product_id": catalog[0].id}]},
+    )
+
+    assert response.status_code == 202, "the event is still accepted"
+    assert calls == [], "no profile was built while cooled down"

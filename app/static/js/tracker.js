@@ -17,6 +17,12 @@
 
   var ENDPOINT = "/api/events/batch";
   var MAX_QUEUE = 10;          // flush once this many events are waiting
+  // Hard ceiling on unsent events. flush() backs off while a request is in
+  // flight, so a hung or slow server would otherwise let the queue grow for as
+  // long as the tab stays open. Analytics must never be the reason a page runs
+  // out of memory: past this we drop the oldest, because the newest behaviour
+  // is the behaviour worth having.
+  var MAX_BUFFERED = 200;
   var FLUSH_INTERVAL_MS = 5000;
   var DEDUPE_WINDOW_MS = 1000;
   var SEARCH_DEBOUNCE_MS = 600;
@@ -97,6 +103,7 @@
   /** Queue an already-built event record. Returns the record, or null if dropped. */
   function enqueue(event) {
     queue.push(event);
+    if (queue.length > MAX_BUFFERED) queue.splice(0, queue.length - MAX_BUFFERED);
     notify(event);
 
     if (queue.length >= MAX_QUEUE) {

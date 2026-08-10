@@ -137,14 +137,16 @@ class RegisterIn(BaseModel):
     email: EmailStr
     full_name: str = Field(default="", max_length=120)
     password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=128)
-    #: Optional so existing callers keep working; when supplied it must match.
+    #: Optional. An HTML form always sends the field, so "" means *omitted* —
+    #: treating an empty string as a mismatch rejected every caller that does
+    #: not render the confirmation box at all.
     confirm_password: str | None = None
 
     @model_validator(mode="after")
     def _passwords_match(self) -> "RegisterIn":
         # Checked here rather than only in the form: `required` and `minlength`
         # attributes are trivially bypassed by anything that is not a browser.
-        if self.confirm_password is not None and self.confirm_password != self.password:
+        if self.confirm_password and self.confirm_password != self.password:
             raise ValueError("passwords do not match")
         return self
 

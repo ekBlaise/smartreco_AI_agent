@@ -269,6 +269,61 @@ appears when tracing is on.
 
 ---
 
+## What keeps the hot path cheap
+
+`POST /api/events/batch` does the least work that is correct: validate, `RPUSH`
+onto Redis, return `202`. No embedding, no model call, and no write to Postgres
+while Redis is reachable.
+
+The one thing that *was* expensive there is now gated. Deciding whether to wake
+the agent needs a behaviour profile — a 400-row event query plus a product
+lookup — and it ran on every batch, before the response. It now runs only when
+the answer is not already known: a cooldown check and the Mesh backoff flag are
+both single Redis reads, and during a cooldown the profile is never built at
+all. Pinned by
+[`test_the_hot_path_skips_the_profile_query_during_a_cooldown`](tests/test_tracking.py).
+
+In the browser, the queue is bounded at 200 unsent events. `flush()` backs off
+while a request is in flight, so a hung server would otherwise let it grow for
+as long as the tab stayed open — analytics must never be why a page runs out of
+memory. Past the ceiling the oldest are dropped, because the newest behaviour is
+the behaviour worth keeping.
+
+Embeddings are cached (that is the paid Mesh call); Qdrant results deliberately
+are not. The vector search is a local millisecond query, so a retrieval cache
+would buy almost nothing and would hide a newly added course from
+recommendations until it expired.
+
+---
+
+## Data boundaries
+
+**Nothing is keyed by an id taken from the request.** Every read is scoped by
+`Audience`, so there is no id to tamper with: `/api/recommendations`,
+`/api/signal/stream`, `/dashboard`, the cart and enrolments all answer with the
+caller's own data or nothing. [`tests/test_ownership.py`](tests/test_ownership.py)
+pins it from both directions — a second account, and a signed-out session, each
+trying the same endpoints.
+
+**Every query is parameterised**, by construction rather than by discipline: the
+app is SQLAlchemy ORM/Core throughout, with no string-built SQL anywhere. The
+single `text()` call in the codebase is `text("SELECT 1")` — a constant health
+probe with no input in it.
+
+**No key ever reaches the browser.** There is no client-side API key at all:
+`MESH_API_KEY`, `QDRANT_API_KEY`, `SECRET_KEY`, `SMTP_PASSWORD` and
+`LANGSMITH_API_KEY` are read only through `app.config.settings` on the server,
+and the page only ever calls same-origin endpoints on this app. Mesh is called
+from `app/llm/mesh.py` in the web process and the worker — never from
+JavaScript.
+
+**Passwords** need at least 8 characters and a matching confirmation, checked in
+the model (`RegisterIn`), not just with `required`/`minlength` attributes that
+bind nothing outside a browser. Both signup paths — `/register` and account
+creation during checkout — go through the same validation.
+
+---
+
 ## Where each requirement lives
 
 | Requirement | Implementation |
@@ -502,7 +557,7 @@ celery -A app.workers.celery_app beat --loglevel=info
 pytest -q
 ```
 
-190 tests, no network and no external services: SQLite, `fakeredis` (sync *and*
+203 tests, no network and no external services: SQLite, `fakeredis` (sync *and*
 async, so the SSE stream is exercised too), an in-memory Qdrant, and a
 deterministic fake in place of Mesh. The fake still goes through the real
 `chat_model(...).with_structured_output(...).invoke(...)` surface, so the wiring
@@ -608,7 +663,7 @@ app/
   models.py     users · products · events · recommendations · agent_runs
   service.py    trigger → agent → persistence, shared by API and workers
 seed.py         catalog + demo accounts, dual-written to both stores
-tests/          190 tests, no network required
+tests/          203 tests, no network required
 ```
 
 ## Data model

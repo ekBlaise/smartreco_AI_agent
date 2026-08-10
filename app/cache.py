@@ -158,9 +158,9 @@ def counters(key: str) -> dict[str, int]:
         return {}
 
 
-def retrieval_cache_key(query_hash: str) -> str:
-    return f"smartreco:retrieval:{query_hash}"
-
-
+#: Embeddings are cached, Qdrant results deliberately are not: the embedding is
+#: the paid Mesh call, while the vector search is a local millisecond query. A
+#: retrieval cache would buy almost nothing and would hide a newly added course
+#: from recommendations until it expired.
 def embedding_cache_key(text_hash: str) -> str:
     return f"smartreco:embedding:{text_hash}"
