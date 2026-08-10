@@ -103,17 +103,48 @@ quietly make the agent fire more often
 
 ---
 
-## Cart, and no sign-in wall
+## Guests are first-class
 
-Adding a course to a cart needs **no account**. The cart is keyed by session,
-not user, so a signed-out visitor gets a real one; the session cookie survives
-login, so it is still there afterwards. Sign-in is required only at checkout,
-which creates enrolments — there is deliberately no payment step and it never
-asks for card details.
+There is **no sign-in wall anywhere**. A signed-out visitor can browse, search,
+add to a cart, check out, and get agent recommendations — all of it.
 
-Putting something in a basket is the strongest intent signal short of buying,
-so it goes through the same buffered event path as every other tracked action
-and feeds the agent's profile.
+That is one idea, not four special cases: [`app/audience.py`](app/audience.py)
+answers "whose behaviour is this?" and everything downstream keys off the
+answer. A signed-in person is keyed by their account, so their profile follows
+them between browsers; everyone else is keyed by their session. The profile, the
+trigger gates, the cache keys, the realtime channel, the stored recommendation
+and enrolments all take an `Audience` rather than a `user_id`.
+
+Before this, all of that was keyed by `user_id`, which quietly meant none of it
+worked signed out — even though anonymous behaviour was being tracked the whole
+time. There was something to reason about and nothing would reason about it.
+
+**The anonymous session id rotates on sign-in and sign-out.** It used to
+survive both, so one browser accumulated events from everyone who had used it
+and the next guest saw the previous person's activity as their own — a real
+leak, visible as an "actions observed" count that belonged to nobody in
+particular. One session in the dev database had events from three different
+users. Rotating on both ends keeps each visitor's signal to themselves.
+
+Checkout can **create the account on the way through**: fill the optional email
+and password in and it signs you up, enrols you and signs you in; leave them
+blank and you check out as a guest. The account is an offer, not a toll gate.
+
+Signing in or registering **claims** what you did as a guest
+(`claim_guest_records`): the events, enrolments, cart and any recommendations
+move onto the account instead of being stranded on a session nobody can be
+identified by again — so the agent does not start from nothing the moment
+someone signs up.
+
+Checkout creates enrolments with no payment step — this is a demo marketplace
+and it never asks for card details. Adding to a cart is the strongest intent
+signal short of buying, so it goes through the same buffered event path as
+everything else.
+
+One thing deliberately does *not* follow the visitor: the browser-side feed is
+stamped with its owner and wiped when that changes, so signing in, out, or in as
+someone else never inherits the previous person's activity — on a shared machine
+that would show one visitor another's browsing.
 
 ---
 
@@ -471,7 +502,7 @@ celery -A app.workers.celery_app beat --loglevel=info
 pytest -q
 ```
 
-187 tests, no network and no external services: SQLite, `fakeredis` (sync *and*
+190 tests, no network and no external services: SQLite, `fakeredis` (sync *and*
 async, so the SSE stream is exercised too), an in-memory Qdrant, and a
 deterministic fake in place of Mesh. The fake still goes through the real
 `chat_model(...).with_structured_output(...).invoke(...)` surface, so the wiring
@@ -577,7 +608,7 @@ app/
   models.py     users · products · events · recommendations · agent_runs
   service.py    trigger → agent → persistence, shared by API and workers
 seed.py         catalog + demo accounts, dual-written to both stores
-tests/          187 tests, no network required
+tests/          190 tests, no network required
 ```
 
 ## Data model

@@ -12,21 +12,36 @@ demo marketplace and it never asks for card details.
 from __future__ import annotations
 
 import logging
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import delete, select, update
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user_optional, get_session_id
+from app.security import SESSION_COOKIE, create_session_token
+from app.config import settings
 from app.database import get_db
 from app.ingest import buffer
-from app.models import CartItem, Enrollment, Product, User
+from app.models import CartItem, Enrollment, Event, Product, Recommendation, User
 from app.service import owns_enrollment
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["cart"])
+
+
+def _set_session(response, user: User) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        create_session_token(user.id, user.role),
+        max_age=settings.session_ttl_hours * 3600,
+        httponly=True,
+        samesite="lax",
+        secure=settings.public_base_url.startswith("https"),
+    )
 
 
 def cart_items(db: Session, session_id: str) -> list[CartItem]:
@@ -136,6 +151,7 @@ def remove_from_cart_form(
 @router.get("/cart", response_class=HTMLResponse)
 def cart_page(
     request: Request,
+    error: str = "",
     db: Session = Depends(get_db),
     user: User | None = Depends(current_user_optional),
 ):
@@ -149,6 +165,7 @@ def cart_page(
         user,
         {
             "items": items,
+            "error": error,
             "total": round(sum(float(i.product.price or 0) for i in items), 2),
             "categories": [],
             **signal_context(db, user, session_id),
@@ -160,6 +177,10 @@ def cart_page(
 @router.post("/cart/checkout")
 def checkout(
     request: Request,
+    email: str = Form(""),
+    password: str = Form(""),
+    confirm_password: str = Form(""),
+    full_name: str = Form(""),
     db: Session = Depends(get_db),
     user: User | None = Depends(current_user_optional),
 ):
@@ -170,8 +191,21 @@ def checkout(
     (:func:`claim_guest_records`) rather than losing them.
     """
     from app.audience import Audience
+    from app.api.routes.auth_routes import rotate_anon_session
 
     session_id = get_session_id(request)
+
+    # Optional: make an account as part of checking out. Leaving the fields
+    # blank checks out as a guest — the account is an offer, not a toll gate.
+    created: User | None = None
+    if user is None and email.strip() and password:
+        created, error = _create_account(db, email, password, confirm_password, full_name)
+        if error:
+            return RedirectResponse(
+                f"/cart?error={quote(error)}", status_code=status.HTTP_303_SEE_OTHER
+            )
+        user = created
+
     audience = Audience.of(user, session_id)
     if not audience.is_valid:
         return RedirectResponse("/cart", status_code=status.HTTP_303_SEE_OTHER)
@@ -202,7 +236,53 @@ def checkout(
         db.rollback()
 
     logger.info("Checked out %d course(s) for %s", added, audience.key)
-    return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+
+    if created is not None:
+        # Everything they did as a guest — browsing, cart, these enrolments —
+        # moves onto the new account before the session id is rotated away.
+        claim_guest_records(db, created, session_id)
+        _set_session(response, created)
+        rotate_anon_session(response)
+    return response
+
+
+def _create_account(
+    db: Session, email: str, password: str, confirm_password: str, full_name: str
+) -> tuple[User | None, str]:
+    """Create an account mid-checkout. Returns (user, error_message)."""
+    from app.api.schemas import MIN_PASSWORD_LENGTH, RegisterIn
+    from app.security import hash_password
+
+    try:
+        payload = RegisterIn(
+            email=email,
+            full_name=full_name,
+            password=password,
+            confirm_password=confirm_password,
+        )
+    except ValidationError as exc:
+        if any("passwords do not match" in str(e.get("msg", "")) for e in exc.errors()):
+            return None, "The two passwords do not match."
+        return None, (
+            f"Enter a valid email and a password of at least "
+            f"{MIN_PASSWORD_LENGTH} characters."
+        )
+
+    normalized = payload.email.lower()
+    if db.scalar(select(User).where(User.email == normalized)):
+        return None, "That email is already registered — sign in and check out again."
+
+    account = User(
+        email=normalized,
+        full_name=payload.full_name.strip(),
+        password_hash=hash_password(payload.password),
+        role="user",
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    return account, ""
 
 
 def claim_guest_records(db: Session, user: User, session_id: str) -> int:
@@ -234,6 +314,18 @@ def claim_guest_records(db: Session, user: User, session_id: str) -> int:
         update(CartItem)
         .where(CartItem.session_id == session_id, CartItem.user_id.is_(None))
         .values(user_id=user.id)
+    )
+    # Their browsing so far is theirs: without this the agent would start from
+    # nothing the moment they made an account.
+    db.execute(
+        update(Event)
+        .where(Event.session_id == session_id, Event.user_id.is_(None))
+        .values(user_id=user.id)
+    )
+    db.execute(
+        update(Recommendation)
+        .where(Recommendation.session_id == session_id, Recommendation.user_id.is_(None))
+        .values(user_id=user.id, session_id=None)
     )
     try:
         db.commit()

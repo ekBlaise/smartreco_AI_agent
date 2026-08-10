@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import asyncio
 import json
 
@@ -105,22 +107,20 @@ def test_attr_json_survives_datetimes():
 
 # --- the SSE endpoint --------------------------------------------------------
 
-def test_stream_requires_a_session(client):
-    response = client.get("/api/signal/stream")
-
-    assert response.status_code in (302, 303, 401)
-
-
 class _StillConnected:
-    """Minimal stand-in for Request — the endpoint only asks one thing of it."""
+    """Minimal stand-in for Request — the endpoint only asks for these."""
+
+    def __init__(self, session_id: str = "test-session"):
+        self.state = SimpleNamespace(session_id=session_id)
+        self.cookies: dict[str, str] = {}
 
     async def is_disconnected(self) -> bool:
         return False
 
 
-async def _first_frame(db, user) -> str:
+async def _first_frame(db, user, session_id: str = "test-session") -> str:
     """Open the real endpoint and take its opening frame, then shut it down."""
-    response = await signal_route.stream(_StillConnected(), db, user)
+    response = await signal_route.stream(_StillConnected(session_id), db, user)
     frames = response.body_iterator
     try:
         async for chunk in frames:
@@ -129,6 +129,14 @@ async def _first_frame(db, user) -> str:
         # The stream is deliberately endless; closing it is how it ends.
         await frames.aclose()
     return ""
+
+
+def test_a_guest_gets_a_stream_too(db, catalog):
+    """The agent runs for signed-out visitors, so they get the same channel."""
+    frame = asyncio.run(_first_frame(db, None, session_id="guest-session"))
+
+    assert frame.startswith("event: snapshot")
+    assert '"events_tracked"' in frame
 
 
 def test_stream_opens_with_a_snapshot_of_current_state(db, learner, catalog):
@@ -182,15 +190,14 @@ def test_product_page_renders_the_panel_for_a_signed_in_user(logged_in, catalog)
     assert 'signalPanel({"' not in html.replace("x-data='signalPanel(", "")
 
 
-def test_anonymous_visitors_get_a_panel_but_no_stream(client, catalog):
-    """They are genuinely being tracked, so they see it. There is no per-user
-    SSE stream to subscribe to, so the panel is flagged anonymous and skips it
-    rather than looping on 401s."""
+def test_anonymous_visitors_get_the_full_panel(client, catalog):
+    """Guests are tracked identically, so they get the same panel, the same
+    stream and the same agent — keyed by session instead of account."""
     html = client.get(f"/course/{catalog[0].slug}").text
 
     assert "Your Signal" in html
     assert "signal.js" in html
-    assert '"anonymous": true' in html or '"anonymous":true' in html
+    assert '"owner": "s:' in html
 
 
 def test_product_cards_expose_a_title_for_the_feed(logged_in, catalog):

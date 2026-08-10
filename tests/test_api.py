@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.audience import Audience
+
 from sqlalchemy import select
 
 from app.models import Product, User
@@ -49,11 +51,13 @@ def test_search_finds_by_keyword(client, catalog):
 
 # --- auth -------------------------------------------------------------------
 
-def test_dashboard_requires_a_session(client):
+def test_the_dashboard_works_for_a_guest(client, catalog):
+    """Guests are tracked and get recommendations, so they get the page too —
+    keyed by session instead of account."""
     response = client.get("/dashboard", follow_redirects=False)
 
-    assert response.status_code == 303
-    assert "/login" in response.headers["location"]
+    assert response.status_code == 200
+    assert "For you" in response.text
 
 
 def test_register_then_land_on_the_dashboard(client, catalog):
@@ -103,9 +107,17 @@ def test_passwords_are_never_stored_in_the_clear(client, db):
     assert user.password_hash.startswith("$2b$")
 
 
-def test_logout_clears_the_session(logged_in):
+def test_logout_clears_the_session(logged_in, learner):
+    """After signing out the dashboard is no longer *their* dashboard — it
+    falls back to the anonymous session's own recommendations."""
+    before = logged_in.get("/dashboard").text
+    assert 'href="/logout"' in before, "signed in"
+
     logged_in.get("/logout", follow_redirects=False)
-    assert logged_in.get("/dashboard", follow_redirects=False).status_code == 303
+
+    after = logged_in.get("/dashboard").text
+    assert 'href="/logout"' not in after, "signed out"
+    assert 'href="/login"' in after
 
 
 def test_login_redirect_only_targets_this_site(client, learner):
@@ -237,7 +249,7 @@ def test_admin_can_see_agent_runs(client, admin, catalog, db, learner):
     from app.service import generate_recommendation
 
     add_events(db, learner, catalog, *AGENTIC_SESSION)
-    generate_recommendation(db, learner.id)
+    generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     _login_admin(client, admin)
@@ -249,8 +261,14 @@ def test_admin_can_see_agent_runs(client, admin, catalog, db, learner):
 
 # --- recommendation API -----------------------------------------------------
 
-def test_recommendation_api_requires_auth(client):
-    assert client.get("/api/recommendations").status_code == 401
+def test_the_recommendation_api_answers_a_guest(client, catalog):
+    """No 401: a signed-out visitor has a profile of their own."""
+    response = client.get("/api/recommendations")
+
+    assert response.status_code == 200
+    assert response.json()["status"] in {
+        "insufficient_activity", "pending", "ready", "unavailable",
+    }
 
 
 def test_api_explains_why_there_is_nothing_yet(logged_in, catalog):
@@ -267,7 +285,7 @@ def test_api_returns_the_stored_recommendation(logged_in, catalog, db, learner):
     from app.service import generate_recommendation
 
     add_events(db, learner, catalog, *AGENTIC_SESSION)
-    generate_recommendation(db, learner.id)
+    generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     response = logged_in.get("/api/recommendations")
@@ -286,7 +304,7 @@ def test_dashboard_renders_the_recommendation(logged_in, catalog, db, learner):
     from app.service import generate_recommendation
 
     add_events(db, learner, catalog, *AGENTIC_SESSION)
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     response = logged_in.get("/dashboard")
@@ -306,7 +324,7 @@ def test_dashboard_alpine_attributes_are_well_formed(logged_in, catalog, db, lea
     from app.service import generate_recommendation
 
     add_events(db, learner, catalog, *AGENTIC_SESSION)
-    generate_recommendation(db, learner.id)
+    generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     html = logged_in.get("/dashboard").text

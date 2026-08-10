@@ -48,22 +48,54 @@
           <span class="price" style="font-size:1.5rem">${{ "%.0f"|format(total) }}</span>
         </div>
 
-        <form method="post" action="/cart/checkout" style="margin-top:16px">
+        {% if error %}<div class="alert error" style="margin-top:14px">{{ error }}</div>{% endif %}
+
+        {# No sign-in required. The account fields are optional — fill them in
+           and checkout creates one, leave them blank and you check out as a
+           guest. #}
+        <form method="post" action="/cart/checkout" style="margin-top:16px"
+              x-data="{ makeAccount: false }">
+          {% if not user %}
+            <label class="checkout-toggle">
+              <input type="checkbox" x-model="makeAccount" style="width:auto">
+              <span>Create an account so this follows me</span>
+            </label>
+
+            <div x-show="makeAccount" x-cloak style="margin-top:10px">
+              <div class="field">
+                <label for="co-email">Email</label>
+                <input id="co-email" type="email" name="email" autocomplete="email"
+                       :required="makeAccount">
+              </div>
+              <div class="field">
+                <label for="co-name">Name <span class="faint">(optional)</span></label>
+                <input id="co-name" name="full_name" autocomplete="name">
+              </div>
+              <div class="field">
+                <label for="co-password">Password <span class="faint">(min 8)</span></label>
+                <input id="co-password" type="password" name="password" minlength="8"
+                       autocomplete="new-password" :required="makeAccount">
+              </div>
+              <div class="field">
+                <label for="co-confirm">Confirm password</label>
+                <input id="co-confirm" type="password" name="confirm_password" minlength="8"
+                       autocomplete="new-password" :required="makeAccount">
+              </div>
+            </div>
+          {% endif %}
+
           <button class="btn primary" style="width:100%">
-            {% if user %}Complete enrollment{% else %}Sign in to check out{% endif %}
+            <span x-show="!makeAccount">Complete enrollment</span>
+            <span x-show="makeAccount" x-cloak>Create account &amp; enroll</span>
           </button>
         </form>
 
-        {% if not user %}
-          <p class="faint" style="margin:12px 0 0;line-height:1.5">
-            Your cart is saved to this browser — it will still be here after you
-            sign in.
-          </p>
-        {% else %}
-          <p class="faint" style="margin:12px 0 0;line-height:1.5">
-            No payment is taken. This is a demo marketplace.
-          </p>
-        {% endif %}
+        <p class="faint" style="margin:12px 0 0;line-height:1.5">
+          No payment is taken — this is a demo marketplace.
+          {% if not user %}
+            Checking out as a guest keeps everything on this browser.
+          {% endif %}
+        </p>
       </aside>
     </div>
   {% else %}

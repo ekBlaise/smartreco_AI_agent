@@ -5,6 +5,8 @@ These are the "efficient AI-call triggering" claims, verified.
 
 from __future__ import annotations
 
+from app.audience import Audience
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -46,7 +48,7 @@ AGENTIC_SESSION = [
 
 
 def test_no_activity_means_no_llm_call(db, learner, catalog):
-    decision = triggers.evaluate(db, learner.id)
+    decision = triggers.evaluate(db, Audience(user_id=learner.id))
 
     assert decision.should_generate is False
     assert decision.reason == "insufficient_activity"
@@ -63,7 +65,7 @@ def test_browsing_below_the_threshold_does_not_fire(db, learner, catalog):
         ("scroll_depth", None, None),
     )
 
-    decision = triggers.evaluate(db, learner.id)
+    decision = triggers.evaluate(db, Audience(user_id=learner.id))
 
     assert decision.should_generate is False
     assert decision.reason == "below_threshold"
@@ -73,7 +75,7 @@ def test_browsing_below_the_threshold_does_not_fire(db, learner, catalog):
 def test_real_intent_fires_the_agent(db, learner, catalog):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
-    decision = triggers.evaluate(db, learner.id)
+    decision = triggers.evaluate(db, Audience(user_id=learner.id))
 
     assert decision.should_generate is True
     assert decision.reason == "score_threshold"
@@ -84,7 +86,7 @@ def test_real_intent_fires_the_agent(db, learner, catalog):
 def test_the_profile_reflects_what_they_actually_did(db, learner, catalog):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
-    profile = triggers.build_profile(db, learner.id)
+    profile = triggers.build_profile(db, Audience(user_id=learner.id))
 
     assert "langgraph agents" in profile.searches
     assert profile.dominant_level in {"intermediate", "advanced"}
@@ -95,7 +97,7 @@ def test_the_profile_reflects_what_they_actually_did(db, learner, catalog):
 def test_identical_behaviour_serves_the_cache_instead_of_regenerating(db, learner, catalog):
     """The hard short-circuit: same signature, zero LLM calls."""
     add_events(db, learner, catalog, *AGENTIC_SESSION)
-    profile = triggers.build_profile(db, learner.id)
+    profile = triggers.build_profile(db, Audience(user_id=learner.id))
 
     db.add(
         Recommendation(
@@ -109,7 +111,7 @@ def test_identical_behaviour_serves_the_cache_instead_of_regenerating(db, learne
     )
     db.commit()
 
-    decision = triggers.evaluate(db, learner.id)
+    decision = triggers.evaluate(db, Audience(user_id=learner.id))
 
     assert decision.should_generate is False
     assert decision.reason == "signature_unchanged"
@@ -118,7 +120,7 @@ def test_identical_behaviour_serves_the_cache_instead_of_regenerating(db, learne
 
 def test_new_interests_change_the_signature_and_regenerate(db, learner, catalog, fake_redis):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
-    first = triggers.build_profile(db, learner.id)
+    first = triggers.build_profile(db, Audience(user_id=learner.id))
 
     db.add(
         Recommendation(
@@ -138,40 +140,40 @@ def test_new_interests_change_the_signature_and_regenerate(db, learner, catalog,
         ("enroll_intent", 5, None),
     )
 
-    second = triggers.build_profile(db, learner.id)
+    second = triggers.build_profile(db, Audience(user_id=learner.id))
     assert second.signature != first.signature
 
-    decision = triggers.evaluate(db, learner.id)
+    decision = triggers.evaluate(db, Audience(user_id=learner.id))
     assert decision.should_generate is True
     assert decision.reason == "signature_changed"
 
 
 def test_cooldown_blocks_a_rapid_second_run(db, learner, catalog, fake_redis):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
-    triggers.mark_generated(learner.id, "some-other-signature")
+    triggers.mark_generated(Audience(user_id=learner.id), "some-other-signature")
 
-    decision = triggers.evaluate(db, learner.id)
+    decision = triggers.evaluate(db, Audience(user_id=learner.id))
 
     assert decision.should_generate is False
     assert decision.reason == "cooldown"
-    assert fake_redis.exists(reco_cooldown_key(learner.id))
+    assert fake_redis.exists(reco_cooldown_key(Audience(user_id=learner.id).key))
 
 
 def test_an_in_flight_run_blocks_a_duplicate(db, learner, catalog, fake_redis):
     """Two batches arriving together must produce one agent run, not two."""
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
-    first = triggers.evaluate(db, learner.id)
-    second = triggers.evaluate(db, learner.id)
+    first = triggers.evaluate(db, Audience(user_id=learner.id))
+    second = triggers.evaluate(db, Audience(user_id=learner.id))
 
     assert first.should_generate is True
     assert second.should_generate is False
     assert second.reason == "already_in_flight"
 
-    triggers.clear_lock(learner.id)
-    assert not fake_redis.exists(reco_lock_key(learner.id))
+    triggers.clear_lock(Audience(user_id=learner.id))
+    assert not fake_redis.exists(reco_lock_key(Audience(user_id=learner.id).key))
 
-    third = triggers.evaluate(db, learner.id)
+    third = triggers.evaluate(db, Audience(user_id=learner.id))
     assert third.should_generate is True
 
 
@@ -179,11 +181,11 @@ def test_force_bypasses_scoring_but_not_the_lock(db, learner, catalog):
     """A manual refresh should work even with thin activity."""
     add_events(db, learner, catalog, ("page_view", None, None))
 
-    forced = triggers.evaluate(db, learner.id, force=True)
+    forced = triggers.evaluate(db, Audience(user_id=learner.id), force=True)
     assert forced.should_generate is True
     assert forced.reason == "forced"
 
-    blocked = triggers.evaluate(db, learner.id, force=True)
+    blocked = triggers.evaluate(db, Audience(user_id=learner.id), force=True)
     assert blocked.should_generate is False
     assert blocked.reason == "already_in_flight"
 
@@ -193,4 +195,4 @@ def test_only_recent_behaviour_counts(db, learner, catalog, monkeypatch, window_
     add_events(db, learner, catalog, *AGENTIC_SESSION)
     monkeypatch.setattr(settings, "reco_behavior_window_hours", window_hours)
 
-    assert triggers.build_profile(db, learner.id).event_count == expected
+    assert triggers.build_profile(db, Audience(user_id=learner.id)).event_count == expected

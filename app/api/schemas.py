@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import model_validator, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.models import EventType
 
@@ -129,10 +129,24 @@ class RecommendationStatusOut(BaseModel):
 
 # --- auth -------------------------------------------------------------------
 
+#: Minimum password length, enforced server-side and mirrored in the forms.
+MIN_PASSWORD_LENGTH = 8
+
+
 class RegisterIn(BaseModel):
     email: EmailStr
     full_name: str = Field(default="", max_length=120)
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=128)
+    #: Optional so existing callers keep working; when supplied it must match.
+    confirm_password: str | None = None
+
+    @model_validator(mode="after")
+    def _passwords_match(self) -> "RegisterIn":
+        # Checked here rather than only in the form: `required` and `minlength`
+        # attributes are trivially bypassed by anything that is not a browser.
+        if self.confirm_password is not None and self.confirm_password != self.password:
+            raise ValueError("passwords do not match")
+        return self
 
 
 class LoginIn(BaseModel):

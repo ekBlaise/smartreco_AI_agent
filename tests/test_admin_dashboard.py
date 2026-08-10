@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.audience import Audience
+
 import pytest
 
 from app import health
@@ -81,8 +83,8 @@ def test_declined_generations_are_counted_by_reason(db, learner, catalog):
     add_events(db, learner, catalog, *AGENTIC_SESSION[:1])  # below reco_min_events
     db.commit()
 
-    triggers.evaluate(db, learner.id)
-    triggers.evaluate(db, learner.id)
+    triggers.evaluate(db, Audience(user_id=learner.id))
+    triggers.evaluate(db, Audience(user_id=learner.id))
 
     assert counters(SKIP_COUNTER_KEY)["insufficient_activity"] == 2
 
@@ -90,9 +92,9 @@ def test_declined_generations_are_counted_by_reason(db, learner, catalog):
 def test_suppression_rate_compares_declines_against_real_runs(db, learner, catalog):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
     db.commit()
-    generate_recommendation(db, learner.id)   # one real run
+    generate_recommendation(db, Audience(user_id=learner.id))   # one real run
     db.commit()
-    generate_recommendation(db, learner.id)   # declined: signature unchanged
+    generate_recommendation(db, Audience(user_id=learner.id))   # declined: signature unchanged
     db.commit()
 
     metrics = admin_metrics.efficiency(db)
@@ -105,7 +107,7 @@ def test_suppression_rate_compares_declines_against_real_runs(db, learner, catal
 def test_efficiency_reports_actions_per_run(db, learner, catalog):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
     db.commit()
-    generate_recommendation(db, learner.id)
+    generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     metrics = admin_metrics.efficiency(db)
@@ -152,7 +154,7 @@ def test_demand_is_weighted_by_engagement_not_raw_event_count(db, learner, catal
 def test_agent_runs_page_can_be_filtered_by_status(admin_client, db, learner, catalog):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
     db.commit()
-    generate_recommendation(db, learner.id)
+    generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     assert "profile_behavior" in admin_client.get("/admin/agent-runs?status=ok").text
@@ -163,7 +165,7 @@ def test_agent_runs_page_can_be_filtered_by_status(admin_client, db, learner, ca
 def test_a_run_shows_the_recommendation_it_produced(admin_client, db, learner, catalog):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
     db.commit()
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     html = admin_client.get("/admin/agent-runs").text

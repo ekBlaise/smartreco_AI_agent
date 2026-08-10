@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.audience import Audience
+
 from sqlalchemy import select
 
 from app.models import Enrollment, Event
@@ -130,7 +132,7 @@ def test_an_enrolled_course_is_never_recommended(db, learner, catalog, fake_mesh
     db.add(Enrollment(user_id=learner.id, product_id=owned.id))
     db.commit()
 
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     assert recommendation is not None
@@ -174,7 +176,7 @@ def test_recommendations_still_work_when_nothing_is_enrolled(db, learner, catalo
     add_events(db, learner, catalog, *AGENTIC_SESSION)
     db.commit()
 
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     assert recommendation is not None and recommendation.items

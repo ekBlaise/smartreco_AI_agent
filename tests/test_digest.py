@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.audience import Audience
+
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
@@ -17,7 +19,7 @@ def _make_recommendation(db, learner, catalog):
     from app.service import generate_recommendation
 
     add_events(db, learner, catalog, *AGENTIC_SESSION)
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
     return recommendation
 

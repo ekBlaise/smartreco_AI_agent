@@ -9,6 +9,8 @@ stops a dead Mesh account from retrying forever.
 
 from __future__ import annotations
 
+from app.audience import Audience
+
 import asyncio
 
 import pytest
@@ -84,7 +86,7 @@ def test_a_billing_refusal_pauses_further_calls(db, learner, catalog, fake_mesh,
         Exception("Error code: 402 - {'error': {'code': 'spend_limit_exceeded'}}")
     )
 
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     assert recommendation is None
@@ -100,7 +102,7 @@ def test_the_dashboard_explains_a_paused_agent(db, learner, catalog, fake_redis)
     db.commit()
     mesh.mark_unavailable("Mesh has no balance — add credit.", 600)
 
-    status = recommendation_status(db, learner)
+    status = recommendation_status(db, Audience(user_id=learner.id))
 
     assert status["status"] == "unavailable"
     assert "balance" in status["message"]

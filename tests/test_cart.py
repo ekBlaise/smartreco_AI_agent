@@ -65,7 +65,46 @@ def test_the_cart_page_renders_signed_out(client, catalog):
     html = client.get("/cart").text
 
     assert catalog[0].title in html
-    assert "Sign in to check out" in html
+    assert "Complete enrollment" in html, "no sign-in wall at checkout"
+    assert "Create an account so this follows me" in html, "the account is offered, not required"
+
+
+def test_checkout_can_create_the_account_on_the_way_through(client, catalog, db):
+    """Making an account is part of checking out, not a gate in front of it."""
+    from app.models import User
+
+    client.post(f"/api/cart/{catalog[0].id}")
+
+    response = client.post(
+        "/cart/checkout",
+        data={"email": "checkout@test.dev", "password": "supersecret", "full_name": "Cee Out"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    account = db.scalar(select(User).where(User.email == "checkout@test.dev"))
+    assert account is not None
+
+    owned = db.scalar(select(Enrollment).where(Enrollment.product_id == catalog[0].id))
+    db.refresh(owned)
+    assert owned.user_id == account.id, "the enrolment lands on the new account"
+    # ...and they are signed in afterwards.
+    assert "smartreco_session" in response.headers.get("set-cookie", "")
+
+
+def test_checkout_rejects_a_duplicate_email_without_losing_the_cart(
+    client, catalog, db, learner
+):
+    client.post(f"/api/cart/{catalog[0].id}")
+
+    response = client.post(
+        "/cart/checkout",
+        data={"email": learner.email, "password": "supersecret"},
+        follow_redirects=False,
+    )
+
+    assert "already%20registered" in response.headers["location"]
+    assert db.scalars(select(CartItem)).all(), "the cart survives a failed signup"
 
 
 def test_an_empty_cart_says_so(client):

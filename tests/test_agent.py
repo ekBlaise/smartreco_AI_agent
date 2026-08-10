@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.audience import Audience
+
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -16,7 +18,7 @@ from tests.test_triggers import AGENTIC_SESSION, add_events
 def test_agent_walks_the_full_graph_and_stores_a_recommendation(db, learner, catalog, fake_mesh):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
-    recommendation, decision = generate_recommendation(db, learner.id)
+    recommendation, decision = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     assert decision.should_generate is True
@@ -40,7 +42,7 @@ def test_agent_walks_the_full_graph_and_stores_a_recommendation(db, learner, cat
 def test_recommended_products_come_from_the_real_catalog(db, learner, catalog):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     catalog_ids = {p.id for p in catalog}
@@ -62,7 +64,7 @@ def test_retrieval_is_behaviour_driven_not_generic(db, learner, catalog):
         ("enroll_intent", 5, None),
     )
 
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     categories = {item.product.category for item in recommendation.items}
@@ -74,7 +76,7 @@ def test_weak_retrieval_triggers_the_refine_loop(db, learner, catalog, fake_mesh
     fake_mesh.fail_grading_times = 1
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     run = db.scalar(select(AgentRun))
@@ -89,7 +91,7 @@ def test_retrieval_budget_is_bounded(db, learner, catalog, fake_mesh):
     fake_mesh.fail_grading_times = 99
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     run = db.scalar(select(AgentRun))
@@ -116,7 +118,7 @@ def test_hallucinated_product_ids_are_dropped(db, learner, catalog, fake_mesh):
     )
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     stored_ids = {item.product_id for item in recommendation.items}
@@ -140,7 +142,7 @@ def test_internal_ids_never_reach_user_facing_copy(db, learner, catalog, fake_me
     )
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
-    recommendation, _ = generate_recommendation(db, learner.id)
+    recommendation, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     copy = " ".join(
@@ -155,7 +157,7 @@ def test_internal_ids_never_reach_user_facing_copy(db, learner, catalog, fake_me
 
 def test_a_new_version_retires_the_previous_one(db, learner, catalog, fake_redis):
     add_events(db, learner, catalog, *AGENTIC_SESSION)
-    first, _ = generate_recommendation(db, learner.id)
+    first, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     # Simulate the cooldown elapsing: clear the Redis key *and* age the stored
@@ -170,7 +172,7 @@ def test_a_new_version_retires_the_previous_one(db, learner, catalog, fake_redis
         ("product_view", 4, None),
         ("enroll_intent", 4, None),
     )
-    second, _ = generate_recommendation(db, learner.id)
+    second, _ = generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
 
     assert second.version == 2
@@ -195,7 +197,7 @@ def test_below_threshold_activity_makes_no_llm_calls(db, learner, catalog, fake_
         ("product_view", 0, None),
     )
 
-    recommendation, decision = generate_recommendation(db, learner.id)
+    recommendation, decision = generate_recommendation(db, Audience(user_id=learner.id))
 
     assert recommendation is None
     assert decision.reason == "below_threshold"
@@ -206,11 +208,11 @@ def test_repeat_generation_is_short_circuited(db, learner, catalog, fake_mesh):
     """Same behaviour twice costs one agent run, not two."""
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
-    generate_recommendation(db, learner.id)
+    generate_recommendation(db, Audience(user_id=learner.id))
     db.commit()
     calls_after_first = fake_mesh.call_count
 
-    second, decision = generate_recommendation(db, learner.id)
+    second, decision = generate_recommendation(db, Audience(user_id=learner.id))
 
     assert second is None
     assert decision.reason in {"signature_unchanged", "cooldown"}
@@ -227,7 +229,7 @@ def test_agent_failure_is_recorded_and_the_lock_released(db, learner, catalog, m
     add_events(db, learner, catalog, *AGENTIC_SESSION)
 
     try:
-        generate_recommendation(db, learner.id)
+        generate_recommendation(db, Audience(user_id=learner.id))
     except RuntimeError:
         pass
     db.commit()
