@@ -1,33 +1,18 @@
-# SmartReco — Behavioural AI Recommendation Agent
+# SmartReco - Behavioural AI Recommendation Agent
 
-A course marketplace that watches how each learner behaves, reasons over that
-behaviour with a LangGraph agent, retrieves genuinely relevant courses from a
-vector database, and writes a persuasive recommendation grounded in the real
-catalog — refreshing as the learner's interests move, and delivered proactively
-by email once a day.
+A course marketplace that watches how each learner behaves, reasons over that behaviour with a LangGraph agent, retrieves genuinely relevant courses from a vector database, and writes a persuasive recommendation grounded in the real catalog - refreshing as the learner's interests move, and delivered proactively by email once a day.
 
-Built for the **SmartReco Build Challenge 2026**. Every LLM and embedding call
-goes through **Mesh API**.
+Built for the **SmartReco Build Challenge 2026**. Every LLM and embedding call goes through **Mesh API**.
 
 ---
 
 ## What it actually does
 
-A signed-in learner browses. `tracker.js` batches their views, searches, clicks,
-scroll depth and dwell time and posts them in bulk. The backend buffers those in
-Redis and returns `202` immediately — nothing about tracking touches the render
-path.
+A signed-in learner browses. `tracker.js` batches their views, searches, clicks, scroll depth and dwell time and posts them in bulk. The backend buffers those in Redis and returns `202` immediately - nothing about tracking touches the render path.
 
-Every batch runs a **cheap, LLM-free check**: is this person's behaviour score
-past the threshold, or has their interest signature actually changed? Only if it
-has, and the cooldown has elapsed, and no run is already in flight, does a Celery
-task wake the agent.
+Every batch runs a **cheap, LLM-free check**: is this person's behaviour score past the threshold, or has their interest signature actually changed? Only if it has, and the cooldown has elapsed, and no run is already in flight, does a Celery task wake the agent.
 
-The agent then profiles their intent, plans retrieval queries, searches Qdrant,
-**grades its own results**, loops back to search differently if they were weak,
-and finally writes a headline, a short narrative referencing what this specific
-person did, and a per-course reason. Anything it invents is dropped before it
-reaches the database.
+The agent then profiles their intent, plans retrieval queries, searches Qdrant, **grades its own results**, loops back to search differently if they were weak, and finally writes a headline, a short narrative referencing what this specific person did, and a per-course reason. Anything it invents is dropped before it reaches the database.
 
 ### Architecture
 
@@ -70,7 +55,7 @@ flowchart TD
 
 ---
 
-## "Your Signal" — watching the agent watch you
+## "Your Signal" - watching the agent watch you
 
 The thing a behavioural recommender usually gets wrong is that all of it is
 invisible. SmartReco puts a live panel in the course-page sidebar showing
@@ -86,102 +71,45 @@ they are genuinely different kinds of information:
 | Cost to the page | **zero requests** | one idle `EventSource` |
 
 The panel is shown to **everyone, signed in or not**. Anonymous behaviour is
-genuinely tracked — events are keyed by session — so hiding the panel from
-signed-out visitors was showing nothing to exactly the people still deciding
-whether the site understands them. They see their signal accruing; the agent's
-recommendation needs an account, and the panel says so.
-
-The feed carries across pages in `sessionStorage`, so it reads as one continuous
-observation rather than resetting to empty on every navigation, and it is a
-fixed five-chip tail with the recommendation as one row of two underneath — the
-panel lives in a sidebar and must not grow down the page as someone browses.
+genuinely tracked - events are keyed by session. The feed carries across pages in `sessionStorage`, so it reads as one continuous observation rather than resetting to empty on every navigation, and it is a fixed five-chip tail with the recommendation as one row of two underneath - the panel lives in a sidebar and must not grow down the page as someone browses.
 
 A chip appears the moment an action is recorded — *"Viewed · Agent Memory
-Architectures"*, *"Searched · multi agent supervisor"*, *"Dwell · 30s on…"* —
-even though the event itself does not leave the browser until the next batch,
-up to five seconds later. Drawing the feed costs nothing, because it renders
-from the same in-memory queue the batcher is filling
-([`tracker.js` `onEvent`](app/static/js/tracker.js)).
+Architectures"*, *"Searched · multi agent supervisor"*, *"Dwell · 30s on…"* - even though the event itself does not leave the browser until the next batch, up to five seconds later. Drawing the feed costs nothing, because it renders from the same in-memory queue the batcher is filling ([`tracker.js` `onEvent`](app/static/js/tracker.js)).
 
 The agent half is real server push. When the tracking endpoint decides the
-gates have passed it publishes `agent_state: thinking`, and the panel's status
-dot turns amber. When the worker commits a new recommendation it publishes the
-payload, and the card swaps in place — no reload, no polling
+gates have passed it publishes `agent_state: thinking`, and the panel's status dot turns amber. When the worker commits a new recommendation it publishes the payload, and the card swaps in place — no reload, no polling
 ([`app/realtime.py`](app/realtime.py), [`app/api/routes/signal.py`](app/api/routes/signal.py)).
 
-Degradation is deliberate: if Redis is unreachable the SSE endpoint sends one
-`closed` frame and the panel falls back to polling `/api/recommendations`. It
-gets slower, never broken.
+Degradation is deliberate: if Redis is unreachable the SSE endpoint sends one `closed` frame and the panel falls back to polling `/api/recommendations`. It gets slower, never broken.
 
-To keep the feed live without distorting the metrics, dwell time is reported in
-slices at 10s/30s/60s/2m/5m rather than one lump on exit. Each slice carries only
-the time since the last one, so they still sum to the true total — and milestone
-slices are scored **zero**, so chopping a long read into more pieces cannot
-quietly make the agent fire more often
-([`app/ingest/buffer.py`](app/ingest/buffer.py)).
+To keep the feed live without distorting the metrics, dwell time is reported in slices at 10s/30s/60s/2m/5m rather than one lump on exit. Each slice carries only the time since the last one, so they still sum to the true total and milestone slices are scored **zero**, so chopping a long read into more pieces cannot quietly make the agent fire more often ([`app/ingest/buffer.py`](app/ingest/buffer.py)).
 
 ---
 
 ## Guests are first-class
 
-There is **no sign-in wall anywhere**. A signed-out visitor can browse, search,
-add to a cart, check out, and get agent recommendations — all of it.
+There is **no sign-in wall anywhere**. A signed-out visitor can browse, search, add to a cart, check out, and get agent recommendations.
 
-That is one idea, not four special cases: [`app/audience.py`](app/audience.py)
-answers "whose behaviour is this?" and everything downstream keys off the
-answer. A signed-in person is keyed by their account, so their profile follows
-them between browsers; everyone else is keyed by their session. The profile, the
-trigger gates, the cache keys, the realtime channel, the stored recommendation
-and enrolments all take an `Audience` rather than a `user_id`.
+That is one idea, not four special cases: [`app/audience.py`](app/audience.py) answers "whose behaviour is this?" and everything downstream keys off the answer. A signed-in person is keyed by their account, so their profile follows them between browsers; everyone else is keyed by their session. The profile, the trigger gates, the cache keys, the realtime channel, the stored recommendation and enrolments all take an `Audience` rather than a `user_id`.
 
-Before this, all of that was keyed by `user_id`, which quietly meant none of it
-worked signed out — even though anonymous behaviour was being tracked the whole
-time. There was something to reason about and nothing would reason about it.
+**The anonymous session id rotates on sign-in and sign-out.** Rotating on both ends keeps each visitor's signal to themselves.
 
-**The anonymous session id rotates on sign-in and sign-out.** It used to
-survive both, so one browser accumulated events from everyone who had used it
-and the next guest saw the previous person's activity as their own — a real
-leak, visible as an "actions observed" count that belonged to nobody in
-particular. One session in the dev database had events from three different
-users. Rotating on both ends keeps each visitor's signal to themselves.
-
-Checkout can **create the account on the way through**: fill the optional email
-and password in and it signs you up, enrols you and signs you in; leave them
-blank and you check out as a guest. The account is an offer, not a toll gate.
+Checkout can **create the account on the way through**: fill the optional email and password in and it signs you up, enrols you and signs you in; leave them blank and you check out as a guest. The account is an offer, not a toll gate.
 
 Signing in or registering **claims** what you did as a guest
-(`claim_guest_records`): the events, enrolments, cart and any recommendations
-move onto the account instead of being stranded on a session nobody can be
-identified by again — so the agent does not start from nothing the moment
-someone signs up.
-
-Checkout creates enrolments with no payment step — this is a demo marketplace
-and it never asks for card details. Adding to a cart is the strongest intent
-signal short of buying, so it goes through the same buffered event path as
-everything else.
-
-One thing deliberately does *not* follow the visitor: the browser-side feed is
-stamped with its owner and wiped when that changes, so signing in, out, or in as
-someone else never inherits the previous person's activity — on a shared machine
-that would show one visitor another's browsing.
+(`claim_guest_records`): the events, enrolments, cart and any recommendations move onto the account instead of being stranded on a session nobody can be identified by again — so the agent does not start from nothing the moment someone signs up.
 
 ---
 
 ## The course page
 
-A course is a real page, not a stub: a generated cover (deterministic hue from
-the slug — no image assets to ship), the full description, a **curriculum** of
-six modules, and an **instructor** profile. Instructors are a shared dimension —
-fourteen people teach forty courses — so they live in a lookup
-([`app/catalog_people.py`](app/catalog_people.py)) rather than being copied onto
-every row, with a graceful fallback for admin-created courses.
+A course is a real page, not a stub: a generated cover, the full description, a **curriculum** of
+six modules, and an **instructor** profile. Instructors are a shared dimension so the same person can teach multiple courses, and the instructor's name is a link to a page listing all their courses.
 
 The curriculum is a per-product field, editable in the admin form, and it is
 **part of the embedded document**. Module titles are the most literal statement
 of what a course teaches and often match a learner's wording better than the
-marketing description does; previously they did not exist, so retrieval could
-not see them. Editing them correctly invalidates the content hash and triggers a
-re-embed.
+marketing description does, so the agent can ground its recommendation in the curriculum as well as the description.
 
 **Enrolling is real state.** There is deliberately no payment — this is a demo
 marketplace and it never asks for card details — but pressing Enrol writes an
@@ -199,8 +127,8 @@ Recommending something a learner already bought is the classic failure that
 makes a recommender look like it was never paying attention.
 
 *Students who explored this also looked at* is genuine co-viewership computed
-from the `events` table — the sessions that opened this course, and what else
-those sessions opened — not "more from this category", which is just the catalog
+from the `events` table - the sessions that opened this course, and what else
+those sessions opened - not "more from this category", which is just the catalog
 talking to itself. It falls back to category only when a course is too new to
 have been co-viewed with anything.
 
@@ -299,8 +227,7 @@ the agent needs a behaviour profile — a 400-row event query plus a product
 lookup — and it ran on every batch, before the response. It now runs only when
 the answer is not already known: a cooldown check and the Mesh backoff flag are
 both single Redis reads, and during a cooldown the profile is never built at
-all. Pinned by
-[`test_the_hot_path_skips_the_profile_query_during_a_cooldown`](tests/test_tracking.py).
+all.
 
 In the browser, the queue is bounded at 200 unsent events. `flush()` backs off
 while a request is in flight, so a hung server would otherwise let it grow for
@@ -638,40 +565,6 @@ python -c "from app.workers.tasks import send_daily_digest; print(send_daily_dig
 With SMTP unconfigured this writes the rendered email to `data/digests/*.html` —
 a documented dry-run, so the feature is inspectable without mail credentials.
 Set `SMTP_HOST`/`SMTP_USER`/`SMTP_PASSWORD` to actually send.
-
----
-
-## Submitting this
-
-Everything the automated checks look for is in the repo:
-
-| Requirement | Where |
-|---|---|
-| Public GitHub repository with all the code | this repo — it is its own git root, not a subfolder of another project |
-| Backend is Python (FastAPI) | [`app/api/main.py`](app/api/main.py) |
-| `requirements.txt` lists a web framework and an LLM client | `fastapi==0.141.1`, `openai==2.52.0` |
-| Every LLM/AI call goes through Mesh API | [`app/llm/mesh.py`](app/llm/mesh.py) is the only place a model client is built — chat *and* embeddings |
-| `README.md` — what, architecture, how to run, bonuses | this file |
-| `.gitignore` ignores `.env` | line 2 of [`.gitignore`](.gitignore) |
-| No secrets committed | verified: the only `rsk_` strings tracked are `rsk_your_key_here` in `.env.example` and a fake test key in `conftest.py` |
-| CI workflow | [`.github/workflows/smartreco-checks.yml`](.github/workflows/smartreco-checks.yml), downloaded from the hackathon URL unmodified |
-
-### Before you push
-
-1. Create the public repository and push this directory (it is already a git
-   root — a workflow inside a subfolder of a larger repo is never run by GitHub
-   Actions).
-2. Add two repository secrets under **Settings → Secrets and variables → Actions**:
-   - `MESH_API_KEY` — your `rsk_...` key
-   - `SUBMISSION_TOKEN` — from your hackathon dashboard
-3. Push. The checks run on every push; results appear in the Actions tab.
-
-Confirm nothing secret is going with it:
-
-```bash
-git ls-files | xargs grep -l "rsk_[A-Za-z0-9]"   # only .env.example and conftest.py
-git ls-files | grep -x ".env"                     # must print nothing
-```
 
 ---
 
