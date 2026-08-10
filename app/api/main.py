@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.deps import RedirectToLogin, login_redirect
+from app.api.deps import AdminOnly, RedirectToLogin, login_redirect
 from app.api.middleware import AnonSessionMiddleware
-from app.api.routes import admin_routes, auth_routes, events, pages, recos
+from app.api.routes import (
+    admin_routes,
+    auth_routes,
+    cart,
+    enroll,
+    events,
+    pages,
+    recos,
+    signal,
+)
 from app.config import BASE_DIR, settings
 from app.database import init_db
+from app.ingest import drain
 from app.llm.mesh import configure_tracing
 from app.vector import store
 
@@ -37,7 +48,17 @@ async def lifespan(app: FastAPI):
         store.ensure_collection()
     except Exception as exc:
         logger.warning("Qdrant not reachable at startup (%s); will retry on first use", exc)
+
+    drain_task = None
+    if settings.event_drain_in_process:
+        drain_task = asyncio.create_task(drain.run_forever())
+
     yield
+
+    if drain_task is not None:
+        drain_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await drain_task
 
 
 app = FastAPI(
@@ -54,11 +75,27 @@ app.include_router(auth_routes.router)
 app.include_router(admin_routes.router)
 app.include_router(events.router)
 app.include_router(recos.router)
+app.include_router(signal.router)
+app.include_router(enroll.router)
+app.include_router(cart.router)
 
 
 @app.exception_handler(RedirectToLogin)
 async def _redirect_to_login(request: Request, exc: RedirectToLogin):
     return login_redirect(exc.next_url)
+
+
+@app.exception_handler(AdminOnly)
+async def _admin_only(request: Request, exc: AdminOnly):
+    """A signed-in learner hitting an admin URL gets a page, not a JSON blob."""
+    from app.api.templating import templates
+
+    return templates.TemplateResponse(
+        request,
+        "forbidden.html",
+        {"user": exc.user, "attempted": request.url.path, "categories": []},
+        status_code=403,
+    )
 
 
 @app.get("/healthz", tags=["ops"])

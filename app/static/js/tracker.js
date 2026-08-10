@@ -22,11 +22,16 @@
   var SEARCH_DEBOUNCE_MS = 600;
   var SCROLL_BUCKETS = [25, 50, 75, 100];
 
+  // Emit dwell in slices so the live panel has something to show while the user
+  // is still reading, instead of one lump after they have already left.
+  var DWELL_MILESTONES_MS = [10000, 30000, 60000, 120000, 300000];
+
   var queue = [];
   var lastSent = {};           // dedupe key -> timestamp
   var firedBuckets = {};
   var flushTimer = null;
   var sending = false;
+  var observers = [];          // notified synchronously as events are recorded
 
   // --- utilities ------------------------------------------------------------
 
@@ -75,6 +80,33 @@
 
   // --- queueing -------------------------------------------------------------
 
+  /**
+   * Hand an event to anything watching (the Signal panel), without letting a
+   * broken subscriber take tracking down with it.
+   */
+  function notify(event) {
+    for (var i = 0; i < observers.length; i++) {
+      try {
+        observers[i](event);
+      } catch (e) {
+        /* a rendering bug in the panel must not stop us recording behaviour */
+      }
+    }
+  }
+
+  /** Queue an already-built event record. Returns the record, or null if dropped. */
+  function enqueue(event) {
+    queue.push(event);
+    notify(event);
+
+    if (queue.length >= MAX_QUEUE) {
+      flush();
+    } else {
+      scheduleFlush();
+    }
+    return event;
+  }
+
   function track(type, payload) {
     try {
       payload = payload || {};
@@ -86,7 +118,7 @@
       if (lastSent[key] && stamp - lastSent[key] < DEDUPE_WINDOW_MS) return;
       lastSent[key] = stamp;
 
-      queue.push({
+      enqueue({
         type: type,
         product_id: payload.product_id != null ? Number(payload.product_id) : null,
         query: payload.query || null,
@@ -95,12 +127,6 @@
         occurred_at: now(),
         meta: payload.meta || {}
       });
-
-      if (queue.length >= MAX_QUEUE) {
-        flush();
-      } else {
-        scheduleFlush();
-      }
     } catch (e) {
       /* tracking must never throw into the page */
     }
@@ -265,13 +291,25 @@
   }
 
   /**
-   * Dwell time, counted only while the tab is actually visible, and emitted
-   * once when the user leaves.
+   * Dwell time, counted only while the tab is actually visible.
+   *
+   * Reported in slices: one at each milestone while the user is still reading
+   * (so the Signal panel can show attention accruing live) and the remainder
+   * when they leave. Each slice carries only the time since the previous one,
+   * so the slices sum to the true total. Milestone slices are flagged, and the
+   * backend scores only the final one — otherwise a long read would be worth
+   * more than it should purely for having been cut into more pieces.
    */
   function bindDwell() {
-    var accumulated = 0;
+    var accumulated = 0;   // visible time so far, in ms
+    var reported = 0;      // how much of it we have already sent
     var startedAt = document.visibilityState === "visible" ? Date.now() : null;
-    var emitted = false;
+    var nextMilestone = 0;
+    var timer = null;
+
+    function visibleMs() {
+      return accumulated + (startedAt === null ? 0 : Date.now() - startedAt);
+    }
 
     function pause() {
       if (startedAt !== null) {
@@ -284,38 +322,60 @@
       if (startedAt === null) startedAt = Date.now();
     }
 
-    function emit() {
-      if (emitted) return;
-      pause();
-      if (accumulated < 2000) return; // a bounce is not attention
-      emitted = true;
-      var productEl = document.querySelector("[data-product-id][data-track-view]");
-      queue.push({
+    function productId() {
+      var el = document.querySelector("[data-product-id][data-track-view]");
+      return el ? Number(el.dataset.productId) : null;
+    }
+
+    /** Send the unreported slice. `milestone` marks it as non-final. */
+    function emit(milestone) {
+      var total = visibleMs();
+      var slice = total - reported;
+      if (slice < 1000) return;            // nothing worth reporting yet
+      if (!milestone && total < 2000) return;  // a bounce is not attention
+      reported = total;
+
+      enqueue({
         type: "dwell",
-        product_id: productEl ? Number(productEl.dataset.productId) : null,
+        product_id: productId(),
         query: null,
         path: window.location.pathname.slice(0, 300),
-        dwell_ms: accumulated,
+        dwell_ms: slice,
         occurred_at: now(),
-        meta: {}
+        meta: { milestone: !!milestone, cumulative_ms: total }
       });
+    }
+
+    function scheduleMilestone() {
+      if (nextMilestone >= DWELL_MILESTONES_MS.length) return;
+      var due = DWELL_MILESTONES_MS[nextMilestone] - visibleMs();
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        nextMilestone++;
+        emit(true);
+        scheduleMilestone();
+      }, Math.max(250, due));
     }
 
     document.addEventListener("visibilitychange", function () {
       if (document.visibilityState === "hidden") {
+        clearTimeout(timer);
         pause();
-        emit();
+        emit(false);
         flush(true);
-        emitted = false; // allow another emit if they come back and leave again
       } else {
         resume();
+        scheduleMilestone();
       }
     });
 
     window.addEventListener("pagehide", function () {
-      emit();
+      clearTimeout(timer);
+      emit(false);
       flush(true);
     });
+
+    scheduleMilestone();
   }
 
   // --- public surface -------------------------------------------------------
@@ -327,6 +387,19 @@
     },
     queueDepth: function () {
       return queue.length;
+    },
+    /**
+     * Observe events as they are recorded, before they are batched and sent.
+     * The Signal panel uses this to render a chip the moment something happens
+     * rather than waiting on the next flush. Returns an unsubscribe function.
+     */
+    onEvent: function (fn) {
+      if (typeof fn !== "function") return function () {};
+      observers.push(fn);
+      return function () {
+        var i = observers.indexOf(fn);
+        if (i > -1) observers.splice(i, 1);
+      };
     }
   };
 

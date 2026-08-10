@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from typing import Any
 
 from app.agent.prompts import (
@@ -188,8 +189,12 @@ def retrieve(state: RecoState) -> RecoState:
                 0.5,
             )
 
+    # Drop owned courses before grading rather than after: they would otherwise
+    # occupy slots in the candidate pool, get graded (an LLM call), and then be
+    # thrown away — crowding out courses the learner could actually buy.
+    excluded = set(state.get("exclude_product_ids") or [])
     candidates = sorted(
-        fused.values(),
+        (c for c in fused.values() if c["product_id"] not in excluded),
         # Tiny quality nudge so near-ties resolve toward well-rated courses.
         key=lambda c: c["fusion_score"] + (c["rating"] / 500),
         reverse=True,
@@ -235,6 +240,7 @@ def grade_candidates(state: RecoState) -> RecoState:
             continue
         graded.append({**candidate, "relevance_score": grade.score, "grade_reason": grade.reason})
     graded.sort(key=lambda c: c["relevance_score"], reverse=True)
+    graded = _diversify(graded)
 
     logger.info(
         "Graded %d/%d candidates above %.2f",
@@ -246,6 +252,34 @@ def grade_candidates(state: RecoState) -> RecoState:
         "node_path": ["grade_candidates"],
         "llm_calls": 1,
     }
+
+
+#: How much a repeated category is penalised, per course already chosen from it.
+DIVERSITY_PENALTY = 0.08
+
+
+def _diversify(graded: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Re-order so one category cannot monopolise the list (MMR-style).
+
+    Semantic search is very good at returning five versions of the same course.
+    Someone deep in agentic AI should still see the MLOps course that gets their
+    agents deployed, so each additional pick from an already-used category is
+    penalised. Relevance still dominates: the penalty only reorders genuine
+    near-ties, and nothing is dropped.
+    """
+    remaining = list(graded)
+    ordered: list[dict[str, Any]] = []
+    seen: Counter[str] = Counter()
+
+    while remaining:
+        best = max(
+            remaining,
+            key=lambda c: c["relevance_score"] - DIVERSITY_PENALTY * seen[c.get("category", "")],
+        )
+        remaining.remove(best)
+        ordered.append(best)
+        seen[best.get("category", "")] += 1
+    return ordered
 
 
 # --- 5. refine (loop back to retrieve) --------------------------------------
@@ -325,14 +359,26 @@ def finalize(state: RecoState) -> RecoState:
     cannot survive to the database, no matter what the model returned.
     """
     result = state.get("result") or {}
-    pool = {c["product_id"]: c for c in (state.get("graded") or [])}
+    excluded = set(state.get("exclude_product_ids") or [])
+    pool = {
+        c["product_id"]: c
+        for c in (state.get("graded") or [])
+        if c["product_id"] not in excluded
+    }
     for candidate in state.get("candidates") or []:
-        pool.setdefault(candidate["product_id"], candidate)
+        if candidate["product_id"] not in excluded:
+            pool.setdefault(candidate["product_id"], candidate)
 
     items: list[dict[str, Any]] = []
     hallucinated: list[int] = []
+    owned: list[int] = []
     for entry in result.get("items") or []:
         pid = entry.get("product_id")
+        if pid in excluded:
+            # Retrieval already filtered these out, but the model can still name
+            # one from the behaviour summary. This is the gate that counts.
+            owned.append(pid)
+            continue
         candidate = pool.get(pid)
         if candidate is None:
             hallucinated.append(pid)
@@ -348,13 +394,18 @@ def finalize(state: RecoState) -> RecoState:
 
     if hallucinated:
         logger.warning("Dropped %d hallucinated product ids: %s", len(hallucinated), hallucinated)
+    if owned:
+        logger.info("Dropped %d already-enrolled product ids: %s", len(owned), owned)
 
     # Top up only if the model under-delivered badly. Padding a good set of three
     # up to four costs a generic "closely matches your interests" line, which
     # reads worse than simply showing three well-argued picks.
     if len(items) < MIN_ITEMS:
         chosen = {i["product_id"] for i in items}
-        for candidate in (state.get("graded") or []) + (state.get("candidates") or []):
+        # Top up from `pool`, not the raw candidate lists: pool has already had
+        # owned courses removed. Reading the raw lists here would hand back the
+        # exact course we just refused to recommend.
+        for candidate in pool.values():
             if len(items) >= MIN_ITEMS:
                 break
             if candidate["product_id"] in chosen:

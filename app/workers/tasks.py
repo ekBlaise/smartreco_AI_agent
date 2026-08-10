@@ -8,6 +8,7 @@ from typing import Any
 from celery import shared_task
 
 from app.config import settings
+from app.audience import Audience
 from app.database import session_scope
 from app.ingest import buffer, triggers
 from app.service import (
@@ -47,18 +48,23 @@ def flush_event_buffer() -> dict[str, int]:
     autoretry_for=(ConnectionError, TimeoutError),
 )
 def generate_recommendation_task(
-    self, user_id: int, trigger: str = "behavior", force: bool = False
+    self,
+    user_id: int | None,
+    trigger: str = "behavior",
+    force: bool = False,
+    session_id: str = "",
 ) -> dict[str, Any]:
-    """Run the agent for one user. Queued by the tracking endpoint, never inline."""
+    """Run the agent for one audience — an account, or a signed-out session."""
+    audience = Audience(user_id=user_id, session_id=session_id)
     try:
         with session_scope() as session:
             recommendation, decision = generate_recommendation(
-                session, user_id, trigger=trigger, force=force
+                session, audience, trigger=trigger, force=force
             )
             if recommendation is None:
-                return {"user_id": user_id, "generated": False, "reason": decision.reason}
+                return {"audience": audience.key, "generated": False, "reason": decision.reason}
             return {
-                "user_id": user_id,
+                "audience": audience.key,
                 "generated": True,
                 "recommendation_id": recommendation.id,
                 "version": recommendation.version,
@@ -67,8 +73,8 @@ def generate_recommendation_task(
     except Exception:
         # Never leave a stale single-flight lock behind — it would block this
         # user's recommendations until the TTL expired.
-        triggers.clear_lock(user_id)
-        logger.exception("generate_recommendation failed for user=%s", user_id)
+        triggers.clear_lock(audience)
+        logger.exception("generate_recommendation failed for %s", audience.key)
         raise
 
 
@@ -119,13 +125,14 @@ def send_daily_digest() -> dict[str, Any]:
                     skipped += 1
                     continue
 
+                audience = Audience(user_id=user_id)
                 recommendation, decision = generate_recommendation(
-                    session, user_id, trigger="daily_digest", force=True
+                    session, audience, trigger="daily_digest", force=True
                 )
                 if recommendation is None:
                     # Fall back to the current stored recommendation so an
                     # engaged user still gets their digest.
-                    recommendation = triggers.current_recommendation(session, user_id)
+                    recommendation = triggers.current_recommendation(session, audience)
                 if recommendation is None:
                     skipped += 1
                     continue

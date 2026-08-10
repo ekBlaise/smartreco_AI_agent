@@ -63,6 +63,7 @@ class ProductIn(BaseModel):
     duration_hours: float = Field(default=0, ge=0)
     rating: float = Field(default=0, ge=0, le=5)
     tags: list[str] = Field(default_factory=list)
+    curriculum: list[str] = Field(default_factory=list)
     is_active: bool = True
 
 
@@ -116,7 +117,9 @@ class RecommendationOut(BaseModel):
 class RecommendationStatusOut(BaseModel):
     """What the dashboard polls: either a recommendation, or why there isn't one."""
 
-    status: Literal["ready", "pending", "insufficient_activity", "disabled"]
+    status: Literal[
+        "ready", "pending", "insufficient_activity", "disabled", "unavailable"
+    ]
     recommendation: RecommendationOut | None = None
     events_tracked: int = 0
     behavior_score: int = 0

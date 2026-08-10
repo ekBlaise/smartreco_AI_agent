@@ -4,9 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ app_name }}{% endblock %}</title>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="{{ static_url('/static/css/app.css') }}">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
-  <script defer src="/static/vendor/alpine.min.js"></script>
+  {# Deferred scripts run in document order, so these must be declared BEFORE
+     Alpine: it starts as soon as it loads and immediately evaluates every
+     x-data on the page. A component registered after that point is simply
+     "not defined", and the panel silently fails to hydrate. tracker.js is here
+     for the same reason — signalPanel's init() subscribes to it. #}
+  <script defer src="{{ static_url('/static/js/tracker.js') }}"></script>
+  {# Loaded for everyone: the Signal panel tracks anonymous visitors too. #}
+  <script defer src="{{ static_url('/static/js/signal.js') }}"></script>
+  <script defer src="{{ static_url('/static/vendor/alpine.min.js') }}"></script>
 </head>
 <body{% block body_attrs %}{% endblock %}>
 
@@ -14,9 +22,24 @@
   <div class="wrap inner">
     <a class="brand" href="/">Smart<span>Reco</span></a>
 
-    <form class="searchbar" action="/search" method="get" role="search">
+    {# Live suggestions. Still a real GET form: without JavaScript, and on
+       Enter, it submits to /search exactly as before.
+       Search *tracking* stays with tracker.js (data-track-search) rather than
+       being duplicated here, or every keystroke would be recorded twice. #}
+    <form class="searchbar" action="/search" method="get" role="search"
+          x-data="headerSearch()" @keydown.escape="close()"
+          @click.outside="close()">
       <input type="search" name="q" value="{{ q|default('') }}"
-             placeholder="Search courses…" autocomplete="off" data-track-search>
+             placeholder="Search courses…" autocomplete="off" data-track-search
+             x-ref="input"
+             @input="schedule()"
+             @focus="reopen()"
+             @keydown.arrow-down.prevent="first()"
+             role="combobox" aria-expanded="false" :aria-expanded="open"
+             aria-controls="search-suggest" aria-autocomplete="list">
+      <div class="suggest" id="search-suggest" x-ref="panel" x-show="open" x-cloak
+           @keydown.arrow-down.prevent="move(1)"
+           @keydown.arrow-up.prevent="move(-1)"></div>
     </form>
 
     <nav class="main">
@@ -30,6 +53,11 @@
     </nav>
 
     <div class="spacer"></div>
+
+    {# Anyone can hold a cart, signed in or not. #}
+    <a class="cart-link {{ 'has-items' if cart_count }}" href="/cart" aria-label="Cart">
+      🛒{% if cart_count %}<span class="cart-count">{{ cart_count }}</span>{% endif %}
+    </a>
 
     {% if user %}
       <span class="faint">{{ user.full_name or user.email }}</span>
@@ -55,7 +83,82 @@
   </div>
 </footer>
 
-<script defer src="/static/js/tracker.js"></script>
+{# Inline and outside {% block scripts %}: child templates override that block,
+   which would take the header search with it. Inline also means this is defined
+   during parsing, before deferred Alpine evaluates the x-data above. #}
+<script>
+  function headerSearch() {
+    return {
+      open: false,
+      timer: null,
+      controller: null,
+      lastQuery: null,
+
+      schedule() {
+        clearTimeout(this.timer);
+        this.timer = setTimeout(() => this.run(), 220);
+      },
+
+      async run() {
+        var q = this.$refs.input.value.trim();
+        if (q.length < 2) return this.close();
+
+        // Abort the previous request so a slow early response cannot land on
+        // top of a fast later one and show results for a stale prefix.
+        if (this.controller) this.controller.abort();
+        this.controller = new AbortController();
+
+        try {
+          var res = await fetch("/api/search/suggest?q=" + encodeURIComponent(q), {
+            credentials: "same-origin",
+            signal: this.controller.signal
+          });
+          if (!res.ok) return;
+          this.$refs.panel.innerHTML = await res.text();
+          this.lastQuery = q;
+          this.open = this.$refs.panel.innerHTML.trim().length > 0;
+        } catch (e) {
+          /* aborted or offline — leave whatever is showing */
+        }
+      },
+
+      /** Returning to the box should show the last results again, not refetch. */
+      reopen() {
+        var q = this.$refs.input.value.trim();
+        if (q.length >= 2 && q === this.lastQuery && this.$refs.panel.innerHTML.trim()) {
+          this.open = true;
+        }
+      },
+
+      close() {
+        this.open = false;
+      },
+
+      items() {
+        return Array.from(this.$refs.panel.querySelectorAll("[data-suggest-item]"));
+      },
+
+      /** Down-arrow from the input drops into the list. */
+      first() {
+        if (!this.open) return this.run();
+        var items = this.items();
+        if (items.length) items[0].focus();
+      },
+
+      /** Arrow keys walk the list; past either end, hand focus back. */
+      move(step) {
+        var items = this.items();
+        if (!items.length) return;
+        var index = items.indexOf(document.activeElement);
+        var next = index + step;
+        if (next < 0) return this.$refs.input.focus();
+        if (next >= items.length) return;
+        items[next].focus();
+      }
+    };
+  }
+</script>
+
 {% block scripts %}{% endblock %}
 </body>
 </html>

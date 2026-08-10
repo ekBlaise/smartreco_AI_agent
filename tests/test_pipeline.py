@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from app.models import Recommendation
+from app.api.routes import events as events_route
+from app.models import AgentRun, Recommendation
 from app.workers.tasks import flush_event_buffer, generate_recommendation_task
 
 
@@ -30,21 +31,16 @@ def browse_like_an_agentic_ai_learner(client, catalog) -> None:
     )
 
 
-def test_browsing_produces_a_recommendation_through_the_real_path(
-    logged_in, catalog, db, learner, monkeypatch
+def test_browsing_produces_a_recommendation_with_no_worker_running(
+    logged_in, catalog, db, learner, monkeypatch, fake_mesh
 ):
-    """Track → flush → trigger → queue → task → stored recommendation.
+    """Track → flush → trigger → dispatch → stored recommendation, on `uvicorn` alone.
 
-    Celery runs eagerly here so the queued task executes inline, exercising the
-    same code the worker would.
+    This is how anyone first runs the project. With no Celery worker consuming,
+    the run has to happen in-process or the agent silently never fires — which
+    is exactly the bug this covers.
     """
-    queued: list[tuple] = []
-
-    def capture(user_id, trigger="behavior", force=False):
-        queued.append((user_id, trigger, force))
-        return generate_recommendation_task.run(user_id, trigger, force)
-
-    monkeypatch.setattr(generate_recommendation_task, "delay", capture)
+    monkeypatch.setattr(events_route, "_workers_online", lambda: False)
 
     browse_like_an_agentic_ai_learner(logged_in, catalog)
     flush_event_buffer()
@@ -56,28 +52,45 @@ def test_browsing_produces_a_recommendation_through_the_real_path(
         json={"events": [{"type": "product_view", "product_id": catalog[1].id}]},
     )
 
-    assert queued, "the tracking endpoint never queued an agent run"
-
     db.expire_all()
     recommendation = db.scalar(
         select(Recommendation).where(Recommendation.user_id == learner.id)
     )
-    assert recommendation is not None, "the queued task did not produce a recommendation"
+    assert recommendation is not None, "no recommendation was produced without a worker"
     assert recommendation.items
     assert recommendation.is_current is True
+
+
+def test_a_run_is_handed_to_celery_when_a_worker_is_consuming(
+    logged_in, catalog, db, learner, monkeypatch, fake_mesh
+):
+    """With a worker online the run must go to the queue, not run in the web
+    process — otherwise the fallback would quietly become the only path."""
+    monkeypatch.setattr(events_route, "_workers_online", lambda: True)
+    sent: list = []
+    monkeypatch.setattr(
+        generate_recommendation_task, "apply_async",
+        lambda args=None, **kw: sent.append(args),
+    )
+
+    browse_like_an_agentic_ai_learner(logged_in, catalog)
+    flush_event_buffer()
+    logged_in.post(
+        "/api/events/batch",
+        json={"events": [{"type": "product_view", "product_id": catalog[1].id}]},
+    )
+
+    assert sent, "a worker was available but nothing was queued"
+    assert sent[0][0] == learner.id
+    db.expire_all()
+    assert db.scalars(select(Recommendation)).all() == [], "should not have run inline"
 
 
 def test_a_burst_of_batches_queues_one_run_not_many(
     logged_in, catalog, db, learner, monkeypatch, fake_mesh
 ):
     """Ten rapid batches must not become ten agent runs."""
-    queued: list[tuple] = []
-
-    def capture(user_id, trigger="behavior", force=False):
-        queued.append((user_id, trigger, force))
-        return generate_recommendation_task.run(user_id, trigger, force)
-
-    monkeypatch.setattr(generate_recommendation_task, "delay", capture)
+    monkeypatch.setattr(events_route, "_workers_online", lambda: False)
 
     browse_like_an_agentic_ai_learner(logged_in, catalog)
     flush_event_buffer()
@@ -94,14 +107,14 @@ def test_a_burst_of_batches_queues_one_run_not_many(
     ).all()
 
     assert len(stored) == 1, f"expected exactly one recommendation, got {len(stored)}"
-    assert len(queued) <= 2, f"queued {len(queued)} agent runs for one burst"
+    # Count real runs, not a transport call: this must stay true however the
+    # run is dispatched.
+    runs = db.scalars(select(AgentRun).where(AgentRun.status == "ok")).all()
+    assert len(runs) <= 2, f"ran the agent {len(runs)} times for one burst"
 
 
 def test_idle_browsing_never_queues_a_run(logged_in, catalog, db, monkeypatch, fake_mesh):
-    queued: list = []
-    monkeypatch.setattr(
-        generate_recommendation_task, "delay", lambda *a, **k: queued.append(a)
-    )
+    monkeypatch.setattr(events_route, "_workers_online", lambda: False)
 
     for _ in range(6):
         logged_in.post(
@@ -113,5 +126,5 @@ def test_idle_browsing_never_queues_a_run(logged_in, catalog, db, monkeypatch, f
         )
         flush_event_buffer()
 
-    assert queued == [], "scrolling around must not wake the agent"
+    assert db.scalars(select(AgentRun)).all() == [], "scrolling must not wake the agent"
     assert fake_mesh.call_count == 0

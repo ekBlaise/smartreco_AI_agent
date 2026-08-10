@@ -49,6 +49,18 @@ class Settings(BaseSettings):
     event_buffer_key: str = "smartreco:events:buffer"
     event_flush_batch_size: int = 500
     event_max_batch_payload: int = 50
+    #: The API drains the buffer itself so the app works without Celery running.
+    #: Set false when Celery Beat is definitely running and you want it to own
+    #: the job exclusively.
+    event_drain_in_process: bool = True
+    event_drain_interval_seconds: int = 5
+    event_drain_lock_seconds: int = 30
+    #: When the broker is unreachable, generate the recommendation in-process
+    #: after the response has been sent rather than dropping it on the floor.
+    inline_generation_fallback: bool = True
+    #: How long to stop calling Mesh after it refuses for a reason retrying
+    #: cannot fix — an empty balance or a bad key.
+    mesh_backoff_seconds: int = 600
 
     # --- Recommendation triggers ------------------------------------------
     reco_score_threshold: int = 12

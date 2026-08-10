@@ -3,44 +3,100 @@
 {% block body_attrs %} data-track-page{% endblock %}
 
 {% block content %}
-<div class="wrap section">
+{# Live search: the input drives a debounced fetch of /api/search and swaps the
+   results in. It is progressive — the form still submits normally without JS,
+   and the first paint below is fully server-rendered. #}
+<div class="wrap section" x-data="liveSearch('{{ q|e }}')">
 
   <div class="section-head">
-    <div>
-      <h1 style="font-size:1.7rem">{% if q %}Results for “{{ q }}”{% else %}Search{% endif %}</h1>
-      {% if q %}<p class="muted" style="margin:0">{{ products|length }} match{{ '' if products|length == 1 else 'es' }}</p>{% endif %}
+    <div style="flex:1;min-width:0">
+      <h1 style="font-size:1.7rem">Search</h1>
+      <p class="muted" style="margin:0">Results update as you type.</p>
     </div>
   </div>
 
-  {% if q and products %}
-    <div class="grid">
-      {% for product in products %}
-        {% with surface = 'search' %}{% include "_course_card.html" %}{% endwith %}
-      {% endfor %}
-    </div>
-  {% elif q %}
-    <div class="empty">
-      <p>Nothing matched “{{ q }}”.</p>
-      <a class="btn" href="/catalog">Browse the full catalog</a>
-    </div>
-  {% else %}
-    <div class="empty">Type a topic in the search box above.</div>
-  {% endif %}
+  <form class="live-search" action="/search" method="get" role="search" @submit="commit()">
+    <input type="search" name="q" x-model="q" @input="schedule()"
+           value="{{ q }}" placeholder="Try “agent memory”, “kafka”, “fine-tuning”…"
+           autocomplete="off" autofocus aria-label="Search courses">
+    <span class="live-search-state" x-show="busy" x-cloak>searching…</span>
+  </form>
+
+  {# Server-rendered first paint. run() replaces this in place — binding x-html
+     to a variable would blank it before the first fetch returned. #}
+  <div x-ref="results" aria-live="polite">
+    {% include "_search_results.html" %}
+  </div>
 
 </div>
 {% endblock %}
 
 {% block scripts %}
-{% if q %}
 <script>
-  // The search page is reached by form submit; record the executed search
-  // explicitly so a landed result page counts even if the input events were
-  // still inside the debounce window.
-  window.addEventListener("load", function () {
-    if (window.SmartReco) {
-      window.SmartReco.track("search", { query: {{ q|tojson }}, meta: { submitted: true } });
-    }
-  });
+  function liveSearch(initial) {
+    return {
+      q: initial,
+      busy: false,
+      timer: null,
+      controller: null,
+      lastTracked: "",
+
+      init() {
+        // Arriving with ?q= (header form, shared link) is still a real search.
+        this.track(this.q.trim());
+      },
+
+      schedule() {
+        clearTimeout(this.timer);
+        // Same debounce the tracker uses, so one deliberate query produces one
+        // request and one tracked search rather than one per keystroke.
+        this.timer = setTimeout(() => this.run(), 300);
+      },
+
+      async run() {
+        var q = this.q.trim();
+        // Abort the in-flight request; otherwise a slow early response can
+        // land after a fast later one and show stale results.
+        if (this.controller) this.controller.abort();
+        this.controller = new AbortController();
+        this.busy = true;
+
+        try {
+          var res = await fetch("/api/search?q=" + encodeURIComponent(q), {
+            credentials: "same-origin",
+            signal: this.controller.signal
+          });
+          if (!res.ok) return;
+          this.$refs.results.innerHTML = await res.text();
+          this.reflectUrl(q);
+          this.track(q);
+        } catch (e) {
+          /* aborted or offline — leave the previous results in place */
+        } finally {
+          this.busy = false;
+        }
+      },
+
+      /** Keep the address bar honest without adding a history entry per keystroke. */
+      reflectUrl(q) {
+        var url = q ? "/search?q=" + encodeURIComponent(q) : "/search";
+        window.history.replaceState({}, "", url);
+      },
+
+      track(q) {
+        if (q.length < 3 || q === this.lastTracked) return;
+        this.lastTracked = q;
+        if (window.SmartReco) window.SmartReco.track("search", { query: q });
+      },
+
+      /** Enter submits: record it as a deliberate search before navigating. */
+      commit() {
+        var q = this.q.trim();
+        if (q && window.SmartReco) {
+          window.SmartReco.track("search", { query: q, meta: { submitted: true } });
+        }
+      }
+    };
+  }
 </script>
-{% endif %}
 {% endblock %}

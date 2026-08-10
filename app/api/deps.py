@@ -13,6 +13,14 @@ from app.security import SESSION_COOKIE, decode_session_token
 ANON_COOKIE = "smartreco_anon"
 
 
+class AdminOnly(Exception):
+    """Signed in, but not an admin — render an HTML page, not a JSON error."""
+
+    def __init__(self, user: "User") -> None:
+        self.user = user
+        super().__init__("Admin access required")
+
+
 class RedirectToLogin(Exception):
     """Raised by page dependencies so the handler can 302 instead of 401."""
 
@@ -60,8 +68,15 @@ def require_user_page(request: Request, user: User | None = Depends(current_user
 
 
 def require_admin_page(user: User = Depends(require_user_page)) -> User:
+    """For HTML admin pages.
+
+    A signed-in non-admin must get a *page*, not a JSON body. Raising
+    ``HTTPException`` here dumped `{"detail":"Admin access required"}` into the
+    browser with no navigation and no way to switch account — which looks
+    exactly like "I signed in and admin is broken".
+    """
     if user.role != Role.ADMIN.value:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required")
+        raise AdminOnly(user)
     return user
 
 

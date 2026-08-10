@@ -54,10 +54,21 @@ def _normalize(record: dict[str, Any]) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         dwell_ms = 0
 
+    meta = record.get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+
     weight = EVENT_WEIGHTS.get(event_type, 0)
-    # Sustained attention is a stronger signal than a bounce.
-    if event_type == "dwell" and dwell_ms >= 30_000:
-        weight += 2
+    if event_type == "dwell":
+        # The tracker reports dwell incrementally so the live panel has something
+        # to show while a user is still reading. Only the final slice scores, or
+        # a long read would be worth several times a short one purely because it
+        # was chopped into more pieces — which would defeat the trigger gates.
+        # Each slice still contributes its real milliseconds to total dwell.
+        if meta.get("milestone"):
+            weight = 0
+        elif max(dwell_ms, int(meta.get("cumulative_ms") or 0)) >= 30_000:
+            weight += 2  # sustained attention beats a bounce
 
     product_id = record.get("product_id")
     try:
@@ -74,7 +85,7 @@ def _normalize(record: dict[str, Any]) -> dict[str, Any] | None:
         "path": (record.get("path") or None),
         "dwell_ms": dwell_ms,
         "weight": weight,
-        "meta": record.get("meta") or {},
+        "meta": meta,
         "occurred_at": occurred_at,
         "ingested_at": datetime.now(timezone.utc),
     }

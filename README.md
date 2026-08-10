@@ -44,9 +44,217 @@ Celery task ──► LangGraph agent ──► Mesh API (chat + embeddings)
                      ▼
         PostgreSQL: recommendations + items + agent_runs
                      │
-                     ├─► rendered on /dashboard (Alpine polls for updates)
+                     ├─► Redis pub/sub ──► SSE ──► live "Your Signal" panel
+                     ├─► rendered on /dashboard
                      └─► Celery Beat 16:00 ──► personalised email digest
 ```
+
+---
+
+## "Your Signal" — watching the agent watch you
+
+The thing a behavioural recommender usually gets wrong is that all of it is
+invisible. SmartReco puts a live panel in the course-page sidebar showing
+exactly what was observed and what the agent did with it.
+
+It carries two streams that arrive by deliberately different routes, because
+they are genuinely different kinds of information:
+
+| | What you just did | What the agent did about it |
+|---|---|---|
+| Source | `tracker.js` observer hook | Celery worker → Redis pub/sub → SSE |
+| Latency | instant | seconds to a minute |
+| Cost to the page | **zero requests** | one idle `EventSource` |
+
+The panel is shown to **everyone, signed in or not**. Anonymous behaviour is
+genuinely tracked — events are keyed by session — so hiding the panel from
+signed-out visitors was showing nothing to exactly the people still deciding
+whether the site understands them. They see their signal accruing; the agent's
+recommendation needs an account, and the panel says so.
+
+The feed carries across pages in `sessionStorage`, so it reads as one continuous
+observation rather than resetting to empty on every navigation, and it is a
+fixed five-chip tail with the recommendation as one row of two underneath — the
+panel lives in a sidebar and must not grow down the page as someone browses.
+
+A chip appears the moment an action is recorded — *"Viewed · Agent Memory
+Architectures"*, *"Searched · multi agent supervisor"*, *"Dwell · 30s on…"* —
+even though the event itself does not leave the browser until the next batch,
+up to five seconds later. Drawing the feed costs nothing, because it renders
+from the same in-memory queue the batcher is filling
+([`tracker.js` `onEvent`](app/static/js/tracker.js)).
+
+The agent half is real server push. When the tracking endpoint decides the
+gates have passed it publishes `agent_state: thinking`, and the panel's status
+dot turns amber. When the worker commits a new recommendation it publishes the
+payload, and the card swaps in place — no reload, no polling
+([`app/realtime.py`](app/realtime.py), [`app/api/routes/signal.py`](app/api/routes/signal.py)).
+
+Degradation is deliberate: if Redis is unreachable the SSE endpoint sends one
+`closed` frame and the panel falls back to polling `/api/recommendations`. It
+gets slower, never broken.
+
+To keep the feed live without distorting the metrics, dwell time is reported in
+slices at 10s/30s/60s/2m/5m rather than one lump on exit. Each slice carries only
+the time since the last one, so they still sum to the true total — and milestone
+slices are scored **zero**, so chopping a long read into more pieces cannot
+quietly make the agent fire more often
+([`app/ingest/buffer.py`](app/ingest/buffer.py)).
+
+---
+
+## Cart, and no sign-in wall
+
+Adding a course to a cart needs **no account**. The cart is keyed by session,
+not user, so a signed-out visitor gets a real one; the session cookie survives
+login, so it is still there afterwards. Sign-in is required only at checkout,
+which creates enrolments — there is deliberately no payment step and it never
+asks for card details.
+
+Putting something in a basket is the strongest intent signal short of buying,
+so it goes through the same buffered event path as every other tracked action
+and feeds the agent's profile.
+
+---
+
+## The course page
+
+A course is a real page, not a stub: a generated cover (deterministic hue from
+the slug — no image assets to ship), the full description, a **curriculum** of
+six modules, and an **instructor** profile. Instructors are a shared dimension —
+fourteen people teach forty courses — so they live in a lookup
+([`app/catalog_people.py`](app/catalog_people.py)) rather than being copied onto
+every row, with a graceful fallback for admin-created courses.
+
+The curriculum is a per-product field, editable in the admin form, and it is
+**part of the embedded document**. Module titles are the most literal statement
+of what a course teaches and often match a learner's wording better than the
+marketing description does; previously they did not exist, so retrieval could
+not see them. Editing them correctly invalidates the content hash and triggers a
+re-embed.
+
+**Enrolling is real state.** There is deliberately no payment — this is a demo
+marketplace and it never asks for card details — but pressing Enrol writes an
+`enrollments` row, bumps the public count, and records the strongest behavioural
+signal in the system through the same buffered path as every other event. The
+button then shows an enrolled state, the course appears under *Your courses*,
+and signed-out visitors get "Sign in to enrol" rather than a button that 401s
+silently.
+
+The point of storing it is the agent: **an enrolled course is never
+recommended.** Owned courses are dropped before grading (so they cannot occupy a
+candidate slot and burn an LLM call on the way to being discarded) *and* again
+in `finalize`, because the model can still name one from the behaviour summary.
+Recommending something a learner already bought is the classic failure that
+makes a recommender look like it was never paying attention.
+
+*Students who explored this also looked at* is genuine co-viewership computed
+from the `events` table — the sessions that opened this course, and what else
+those sessions opened — not "more from this category", which is just the catalog
+talking to itself. It falls back to category only when a course is too new to
+have been co-viewed with anything.
+
+**Search is live in two places.** The header box on every page opens a
+suggestion dropdown as you type — arrow keys walk it, Escape closes it, Enter
+still submits to the full results page. The `/search` page filters its grid in
+place. Both debounce, both abort the in-flight request so a slow early response
+cannot overwrite a fast later one, and both swap in an HTML *fragment* rendered
+from a shared partial rather than JSON — so there is one definition of a result
+and the tracking attributes come along for free. Neither replaces the plain GET
+form, which still works with JavaScript disabled.
+
+Search *tracking* deliberately stays in `tracker.js` rather than being repeated
+in each widget; otherwise a single query would be recorded two or three times
+and quietly inflate the behaviour score that decides when the agent runs.
+
+---
+
+## Running without Celery
+
+The buffer exists so tracking never blocks a request, and Celery Beat drains it
+a few seconds later. That is still the intended path — but it made the app look
+broken to anyone who started only `uvicorn`. Events piled up in Redis, Postgres
+stayed empty, and every screen that reads it truthfully reported zero while
+nothing errored anywhere.
+
+So the API now drains the buffer itself ([`app/ingest/drain.py`](app/ingest/drain.py)),
+and dispatches an agent run in-process when no worker is consuming. The second
+half matters more than it sounds: Redis is the Celery broker, so with Redis up
+and no worker running, `apply_async` **succeeds** into a queue nobody reads and
+the recommendation silently never happens. Testing the broker is not enough —
+the dispatcher pings for live *workers* (cached, off the request path) and only
+hands off when one answers.
+
+Both are fallbacks, not replacements. A Redis lock keeps one drainer at a time,
+`LPOP` is atomic so Beat can share the work, and with a worker online the run
+still goes to the queue. Set `EVENT_DRAIN_IN_PROCESS=false` to hand the job back
+to Beat exclusively.
+
+Related: when Mesh refuses for a reason retrying cannot fix — an empty balance,
+a bad key — the agent backs off for ten minutes instead of burning a failing
+round-trip and a stack trace every time the trigger fires, and the dashboard
+says *"Recommendations paused"* with the reason rather than spinning forever.
+
+---
+
+## The admin side
+
+Three tabs at `/admin`.
+
+**Overview** is an operations page, not a vanity dashboard. It answers three
+questions in order:
+
+*Is it healthy?* — every dependency is probed directly
+([`app/health.py`](app/health.py)), because four of the five fail *partially and
+silently*: without Qdrant recommendations get thinner rather than erroring,
+without Redis nothing is deduped, without a Celery worker generation quietly
+falls back to inline, and without a Mesh key the agent records an `unconfigured`
+run instead of raising. An operator can be badly degraded with no error ever
+reaching them. The Celery probe pings the *workers*, not the broker — a live
+broker with nothing behind it is the failure that looks fine.
+
+*Is it working?* — events stored and buffered, active learners, live
+recommendations, the signal mix, and which categories learners are actually
+drawn to (weighted by engagement, not raw clicks).
+
+*What is it costing?* — the **AI spend discipline** panel. Efficiency is a
+judged criterion and it is invisible by default: a generation that never happens
+leaves no log line, no `agent_runs` row and no bill. So the trigger gates now
+count every refusal by reason ([`_decline`](app/ingest/triggers.py)), and the
+dashboard reports tracked actions per agent run, Mesh calls per run, and what
+share of considered generations were declined before any model call — broken
+down by which gate stopped them.
+
+**Catalog** is the product CRUD, with live SQL/Qdrant counts, a per-row vector
+state and a force re-index. The title filter is live — it fetches the same table
+partial the full page renders, so injected rows keep their Edit bindings, and it
+still filters server-side without JavaScript.
+
+**Agent runs** lists every invocation, filterable by outcome. Open a row and it
+expands to the node path as a chain — repeated nodes highlighted, which is the
+self-correction loop made visible — next to the recommendation that run actually
+wrote and the courses it grounded it in, with relevance scores. A LangSmith link
+appears when tracing is on.
+
+---
+
+## Where each requirement lives
+
+| Requirement | Implementation |
+|---|---|
+| **1. Platform** — email/password login, two roles | [`app/security.py`](app/security.py) (bcrypt + JWT in an httpOnly cookie), [`auth_routes.py`](app/api/routes/auth_routes.py), role gate in [`deps.py`](app/api/deps.py) |
+| **1. Clean related schema** | [`app/models.py`](app/models.py) — `users`, `products`, `events`, `recommendations`, `recommendation_items`, `agent_runs`, properly foreign-keyed and indexed |
+| **2. Admin CRUD** | [`admin_routes.py`](app/api/routes/admin_routes.py) + [`admin/products.html`](app/templates/admin/products.html) |
+| **2. Dual-write, kept in sync** | [`app/vector/sync.py`](app/vector/sync.py) — every write goes to Postgres *and* Qdrant; `embedding_hash`/`payload_hash` prove sync, `reconcile_vector_store` repairs drift every 15 min |
+| **3. Track views, searches, clicks, time spent** | [`tracker.js`](app/static/js/tracker.js) — 9 event types, including live search and sliced dwell |
+| **3. Efficient, non-blocking, batched, throttled** | in-memory queue → batch on size/timer/`pagehide`; `sendBeacon` on exit; scroll bucketed, search debounced, dwell sliced, duplicates dropped; server buffers to Redis and returns `202` |
+| **3. Sensible event schema** | `events` table: who, what, when, plus weight, dwell, path, JSON meta |
+| **4. Agent consumes activity and reasons** | [`app/agent/`](app/agent/) — LangGraph state machine |
+| **4. RAG grounded in the real catalog** | Qdrant retrieval in [`nodes.py`](app/agent/nodes.py); `finalize` drops any id not in the catalog |
+| **4. Persuasive personalised narrative** | [`prompts.py`](app/agent/prompts.py) — headline + behaviour-referencing narrative + per-course reason |
+| **4. Stored and refreshed** | `recommendations` is versioned; a new version retires the previous one |
+| **5. Smart about when to call the AI** | [`app/ingest/triggers.py`](app/ingest/triggers.py) — four gates, zero LLM calls; identical signature serves the stored result |
+| **5. Caching** | Redis caches embeddings and retrieval results; unchanged product text skips re-embedding entirely |
 
 ---
 
@@ -263,10 +471,12 @@ celery -A app.workers.celery_app beat --loglevel=info
 pytest -q
 ```
 
-89 tests, no network and no external services: SQLite, `fakeredis`, an in-memory
-Qdrant, and a deterministic fake in place of Mesh. The fake still goes through
-the real `chat_model(...).with_structured_output(...).invoke(...)` surface, so
-the wiring is genuinely exercised rather than bypassed.
+187 tests, no network and no external services: SQLite, `fakeredis` (sync *and*
+async, so the SSE stream is exercised too), an in-memory Qdrant, and a
+deterministic fake in place of Mesh. The fake still goes through the real
+`chat_model(...).with_structured_output(...).invoke(...)` surface, so the wiring
+is genuinely exercised rather than bypassed. The suite is hermetic: it behaves
+identically whether or not the docker-compose services happen to be running.
 
 ### A note on model compatibility
 
@@ -280,17 +490,22 @@ reject the request with a `400 invalid_request`. If you switch
 ## Seeing it work
 
 1. Sign in as `user@smartreco.dev`.
-2. Open three or four **Agentic AI** courses, search for `langgraph agents`,
-   search again for `multi agent orchestration`, and click *Enroll now* on one.
-3. Watch the worker log. You will see **one** generation fire — not one per
-   click — with the reason it fired and the node path it walked.
-4. `/dashboard` shows the recommendation: a narrative naming what you actually
-   browsed, and four real courses each with their own reason.
-5. Click the same things again. The log shows the signature short-circuit and
+2. Open any course. The **Your Signal** panel is in the sidebar, dot green on
+   `streaming`.
+3. Scroll, read for half a minute, open another course, run a search. Chips
+   appear in the panel as each action is recorded — *Viewed*, *Read 50%*,
+   *Dwell 30s*, *Searched* — with no request made to draw them.
+4. Once the gates pass, the dot turns amber on `agent thinking` while the worker
+   runs, then the recommendation card **swaps in place**. No reload.
+5. Watch the worker log alongside it. You will see **one** generation fire — not
+   one per click — with the reason it fired and the node path it walked.
+6. `/dashboard` shows the same recommendation in full: a narrative naming what
+   you actually browsed, and real courses each with their own reason.
+7. Click the same things again. The log shows the signature short-circuit and
    **no new Mesh call**.
-6. `/admin/agent-runs` lists every run — node path, retrieval attempts, Mesh
+8. `/admin/agent-runs` lists every run — node path, retrieval attempts, Mesh
    calls, latency, and a LangSmith trace link when tracing is on.
-7. `/admin/products`: add a course, then search for it semantically — it is
+9. `/admin/products`: add a course, then search for it semantically — it is
    retrievable immediately. Delete it and it leaves both stores.
 
 Trigger the digest by hand:
@@ -307,12 +522,38 @@ Set `SMTP_HOST`/`SMTP_USER`/`SMTP_PASSWORD` to actually send.
 
 ## Bonus features implemented
 
-| Bonus | Status | Where |
-|---|---|---|
-| ⭐ Structured agent framework (LangGraph) | ✅ | `app/agent/graph.py` — 7 nodes, conditional self-correction edge |
-| ⭐ Scheduled proactive delivery | ✅ | Celery Beat daily digest, `app/workers/{celery_app,tasks,email}.py` |
-| ⭐ Observability (LangSmith) | ✅ | `app/llm/mesh.py:configure_tracing`, trace URLs stored per run, `/admin/agent-runs` |
-| ⭐ Retrieval polish | ✅ | Multi-query fan-out + reciprocal rank fusion + metadata filtering + LLM re-ranking + query refinement loop |
+**⭐ Structured agent framework — LangGraph.** [`app/agent/graph.py`](app/agent/graph.py)
+is an explicit `StateGraph`, not a prompt chain. Seven nodes cover exactly the
+shape the brief asks for: analyse the activity (`profile_behavior`), decide what
+to retrieve (`plan_queries`), retrieve (`retrieve`), **evaluate retrieval
+quality** (`grade_candidates`), **refine and go round again** (`refine_queries`,
+a conditional edge back to `retrieve`, budgeted at three attempts), then
+`generate` and `finalize`. The self-correction loop is real and observable — a
+live run against Mesh went `graded 0/12 → refine → 2/12 → refine → 3/12 →
+generate`, and the node path of every run is stored on the `agent_runs` row.
+
+**⭐ Scheduled proactive delivery — Celery Beat.** A real scheduler, not a
+button: [`app/workers/celery_app.py`](app/workers/celery_app.py) registers three
+periodic tasks — flush the event buffer every 10s, reconcile Postgres↔Qdrant
+every 15 min, and send the digest at `DIGEST_HOUR`. The digest re-runs the agent
+over the day's activity and emails a personalised recap
+([`app/workers/email.py`](app/workers/email.py)).
+
+**⭐ Observability — LangSmith.** [`configure_tracing`](app/llm/mesh.py) wires
+tracing at import so the API, the worker and the seed script are all covered.
+Each run's LangSmith URL is stored on its `agent_runs` row, and `/admin/agent-runs`
+shows the node path, Mesh call count, candidate count, latency and status for
+every invocation — so the workflow is inspectable even without a LangSmith key.
+
+**⭐ Retrieval polish.** Five things, layered:
+multi-query fan-out (2–4 behaviour-derived queries per run) ·
+**reciprocal rank fusion** across them ·
+**metadata filtering** on the learner's inferred level, as a weighted second pass ·
+**LLM re-ranking** in `grade_candidates`, which scores every candidate and drops
+anything under the floor ·
+**MMR-style diversification** so semantic search cannot return five variations of
+one course — a learner deep in agentic AI still sees the MLOps course that gets
+their agents deployed.
 
 Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` to see full agent traces.
 
@@ -326,14 +567,17 @@ app/
   api/          FastAPI routes, deps, middleware, templating
   ingest/       event buffering + the LLM-free trigger gates
   llm/mesh.py   the ONLY place a model client is constructed
+  catalog_people.py  curricula + instructor profiles for the seeded catalog
+  health.py     dependency probes for the admin overview
+  realtime.py   Redis pub/sub channel behind the live Signal panel
   vector/       Qdrant store + dual-write sync
   workers/      Celery app, Beat tasks, email digest
   templates/    Jinja2 pages + the digest email
-  static/       tracker.js, CSS, vendored Alpine
+  static/       tracker.js, signal.js, CSS, vendored Alpine
   models.py     users · products · events · recommendations · agent_runs
   service.py    trigger → agent → persistence, shared by API and workers
 seed.py         catalog + demo accounts, dual-written to both stores
-tests/          84 tests, no network required
+tests/          187 tests, no network required
 ```
 
 ## Data model

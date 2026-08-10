@@ -44,6 +44,8 @@ class FakeChatModel:
         self._grade_calls = 0
         #: product ids the generator should claim to recommend; None = use candidates
         self.force_item_ids: list[int] | None = None
+        #: raised on the next call, for exercising Mesh failure handling
+        self.failure: BaseException | None = None
 
     # --- interface used by production code ---------------------------------
 
@@ -65,10 +67,17 @@ class FakeChatModel:
     def set_response(self, schema: type, value: Any) -> None:
         self.overrides[schema] = value
 
+    def fail_with(self, exc: BaseException) -> None:
+        """Make every subsequent call raise, as a refusing Mesh would."""
+        self.failure = exc
+
     # --- response generation ------------------------------------------------
 
     def _respond(self, schema: type, messages: Any):
         self.calls.append((schema.__name__, messages))
+
+        if self.failure is not None:
+            raise self.failure
 
         if schema in self.overrides:
             return self.overrides[schema]

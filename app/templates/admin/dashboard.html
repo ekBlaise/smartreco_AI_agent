@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% set admin_tab = 'overview' %}
+{% block title %}Overview — Admin — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="wrap section">
+
+  <div class="section-head">
+    <div>
+      <h1 style="font-size:1.7rem">Operations</h1>
+      <p class="muted" style="margin:0">
+        Whether it is healthy, whether it is working, and what it is costing.
+      </p>
+    </div>
+    <span class="health-pill is-{{ overall }}">
+      <span class="dot"></span>
+      {% if overall == 'ok' %}All systems normal
+      {% elif overall == 'degraded' %}Running degraded
+      {% else %}Attention needed{% endif %}
+    </span>
+  </div>
+
+  {% include "admin/_nav.html" %}
+
+  {# --- dependencies ----------------------------------------------------- #}
+  <div class="health-grid">
+    {% for c in components %}
+      <div class="health-card is-{{ c.status }}">
+        <div class="health-name">
+          <span class="dot"></span>{{ c.name }}
+        </div>
+        <div class="health-detail">{{ c.detail or c.status }}</div>
+      </div>
+    {% endfor %}
+  </div>
+
+  {# --- the efficiency claim, made checkable ----------------------------- #}
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <h2>AI spend discipline</h2>
+        <p class="muted" style="margin:0">
+          The agent is meant to run on meaningful change, not on every click.
+          These are the numbers that show whether it does.
+        </p>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="n">{{ efficiency.events_per_run or '—' }}</div>
+        <div class="l">Tracked actions per agent run</div>
+        <div class="hint">Higher is better — it means fewer runs bought more signal.</div>
+      </div>
+      <div class="stat">
+        <div class="n">{{ efficiency.suppressed }}</div>
+        <div class="l">Generations suppressed</div>
+        <div class="hint">
+          {% if efficiency.suppression_rate is not none %}
+            {{ efficiency.suppression_rate }}% of everything considered was declined before any model call.
+          {% else %}
+            Nothing considered yet.
+          {% endif %}
+        </div>
+      </div>
+      <div class="stat">
+        <div class="n">{{ efficiency.calls_per_run or '—' }}</div>
+        <div class="l">Mesh calls per run</div>
+        <div class="hint">{{ efficiency.llm_calls }} across {{ efficiency.runs }} run{{ '' if efficiency.runs == 1 else 's' }}.</div>
+      </div>
+      <div class="stat">
+        <div class="n">{{ (efficiency.avg_latency_ms / 1000)|round(1) }}<span class="unit">s</span></div>
+        <div class="l">Average run</div>
+        <div class="hint">End to end, including retrieval and grading.</div>
+      </div>
+    </div>
+
+    <div class="split">
+      <div class="card">
+        <h3 class="card-title">Why generations were declined</h3>
+        {% if efficiency.skips %}
+          {% set skip_max = efficiency.skips[0][1] %}
+          {% for label, count in efficiency.skips %}
+            <div class="bar-row">
+              <div class="bar-label">{{ label }}</div>
+              <div class="bar-track">
+                <div class="bar-fill" style="width:{{ (count / skip_max * 100)|round|int }}%"></div>
+              </div>
+              <div class="bar-value">{{ count }}</div>
+            </div>
+          {% endfor %}
+        {% elif not efficiency.counters_available %}
+          <p class="faint">Redis is unavailable, so suppressions are not being counted.</p>
+        {% else %}
+          <p class="faint">No generation has been declined yet.</p>
+        {% endif %}
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">Run outcomes</h3>
+        {% if efficiency.by_status %}
+          {% set status_max = efficiency.by_status|map(attribute=1)|max %}
+          {% for name, count in efficiency.by_status %}
+            <div class="bar-row">
+              <div class="bar-label"><span class="pill is-{{ name }}">{{ name }}</span></div>
+              <div class="bar-track">
+                <div class="bar-fill is-{{ name }}" style="width:{{ (count / status_max * 100)|round|int }}%"></div>
+              </div>
+              <div class="bar-value">{{ count }}</div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <p class="faint">The agent has not run yet.</p>
+        {% endif %}
+
+        {% if efficiency.by_trigger %}
+          <h3 class="card-title" style="margin-top:20px">What set it off</h3>
+          <div class="chips">
+            {% for name, count in efficiency.by_trigger %}
+              <span class="tag">{{ name.replace('_', ' ') }} <b>{{ count }}</b></span>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  {# --- ingest ----------------------------------------------------------- #}
+  <section class="section">
+    <div class="section-head"><h2>Behavioural ingest</h2></div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="n">{{ "{:,}".format(ingest.total) }}</div>
+        <div class="l">Events stored</div>
+        <div class="hint">{{ "{:,}".format(ingest.last_24h) }} in the last 24 hours.</div>
+      </div>
+      <div class="stat">
+        <div class="n {{ 'bad' if ingest.buffered and not worker_online }}">{% if ingest.buffered is none %}—{% else %}{{ ingest.buffered }}{% endif %}</div>
+        <div class="l">Waiting in the buffer</div>
+        <div class="hint">
+          {% if ingest.buffered is none %}
+            Redis unavailable — events write straight through to Postgres.
+          {% elif ingest.buffered and not worker_online %}
+            Nothing is draining these. Start Celery Beat to flush them.
+          {% else %}
+            Flushed to Postgres in bulk every 10s by Celery Beat.
+          {% endif %}
+        </div>
+      </div>
+      <div class="stat">
+        <div class="n">{{ audience.active_24h }}<span class="unit">/{{ audience.learners }}</span></div>
+        <div class="l">Learners active today</div>
+        <div class="hint">{{ audience.total }} accounts, {{ audience.admins }} admin.</div>
+      </div>
+      <div class="stat">
+        <div class="n">{{ recos.current }}</div>
+        <div class="l">Live recommendations</div>
+        <div class="hint">{{ recos.total }} generated in total, older versions retired.</div>
+      </div>
+    </div>
+
+    <div class="split">
+      <div class="card">
+        <h3 class="card-title">Signal mix</h3>
+        {% if ingest.by_type %}
+          {% set type_max = ingest.by_type[0][1] %}
+          {% for name, count in ingest.by_type %}
+            <div class="bar-row">
+              <div class="bar-label mono">{{ name }}</div>
+              <div class="bar-track">
+                <div class="bar-fill" style="width:{{ (count / type_max * 100)|round|int }}%"></div>
+              </div>
+              <div class="bar-value">{{ count }}</div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <p class="faint">Nothing tracked yet.</p>
+        {% endif %}
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">What learners are drawn to</h3>
+        <p class="faint" style="margin-top:-4px">Categories by weighted engagement, not raw clicks.</p>
+        {% if demand %}
+          {% set demand_max = demand[0][1] %}
+          {% for name, weight in demand %}
+            <div class="bar-row">
+              <div class="bar-label">{{ name }}</div>
+              <div class="bar-track">
+                <div class="bar-fill is-accent" style="width:{{ (weight / demand_max * 100)|round|int }}%"></div>
+              </div>
+              <div class="bar-value">{{ weight }}</div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <p class="faint">No engagement recorded against the catalog yet.</p>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  {# --- catalog + dual write --------------------------------------------- #}
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <h2>Catalog &amp; dual-write</h2>
+        <p class="muted" style="margin:0">Every product write lands in PostgreSQL and Qdrant.</p>
+      </div>
+      <a class="btn" href="/admin/products">Manage catalog →</a>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="n">{{ catalog.total }}</div>
+        <div class="l">Products in SQL</div>
+        <div class="hint">{{ catalog.active }} active and retrievable.</div>
+      </div>
+      <div class="stat">
+        <div class="n">{% if sync.vector_points is none %}—{% else %}{{ sync.vector_points }}{% endif %}</div>
+        <div class="l">Vectors in Qdrant</div>
+        <div class="hint">{{ sync.vector_error or 'Embedded through Mesh.' }}</div>
+      </div>
+      <div class="stat">
+        <div class="n {{ 'good' if sync.in_sync else 'bad' }}">{{ 'In sync' if sync.in_sync else 'Drifted' }}</div>
+        <div class="l">Dual-write status</div>
+        <div class="hint">
+          {% if sync.pending_sync %}{{ sync.pending_sync }} awaiting re-index — repaired automatically every 15 min.
+          {% else %}Content hashes match in both stores.{% endif %}
+        </div>
+      </div>
+      <div class="stat">
+        <div class="n">{{ catalog.by_category|length }}</div>
+        <div class="l">Categories</div>
+        <div class="hint">
+          {% for name, count in catalog.by_category[:3] %}{{ name }} ({{ count }}){% if not loop.last %} · {% endif %}{% endfor %}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {# --- recent runs ------------------------------------------------------- #}
+  <section class="section">
+    <div class="section-head">
+      <h2>Latest agent runs</h2>
+      <a class="btn" href="/admin/agent-runs">All runs →</a>
+    </div>
+
+    {% if recent_runs %}
+      <div class="card" style="padding:0;overflow-x:auto">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>When</th><th>Trigger</th><th>Status</th>
+              <th>Path</th><th class="num">Mesh</th><th class="num">Took</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for run in recent_runs %}
+              <tr>
+                <td class="mono nowrap">{{ run.created_at.strftime('%d %b %H:%M') }}</td>
+                <td class="mono">{{ run.trigger }}</td>
+                <td><span class="pill is-{{ run.status }}">{{ run.status }}</span></td>
+                <td class="mono faint path">{{ run.node_path|join(' → ') or '—' }}</td>
+                <td class="num">{{ run.llm_calls }}</td>
+                <td class="num nowrap">{{ (run.latency_ms / 1000)|round(1) }}s</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="card center" style="padding:40px 24px">
+        <p class="faint" style="margin:0">
+          The agent has not run yet. Browse the catalog as a learner and it will
+          wake once the trigger gates pass.
+        </p>
+      </div>
+    {% endif %}
+  </section>
+
+</div>
+{% endblock %}

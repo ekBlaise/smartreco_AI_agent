@@ -5,69 +5,183 @@
 {% block content %}
 {# data-track-view makes tracker.js record this as a product_view rather than a page_view. #}
 <div class="wrap section" data-product-id="{{ product.id }}" data-track-view
-     data-track-category="{{ product.category }}">
+     data-track-category="{{ product.category }}"
+     data-track-title="{{ product.title }}">
 
   <a class="faint" href="/catalog?category={{ product.category|urlencode }}">← {{ product.category }}</a>
 
-  <div style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:32px;margin-top:16px"
-       class="product-layout">
-
+  <div class="product-layout">
     <div>
-      <div class="tags">
+      {# A quiet generated cover: deterministic hue from the slug, so a course
+         always looks the same without shipping any image assets. #}
+      {% set hue = (product.slug | length * 37 + product.id * 53) % 360 %}
+      <div class="course-cover" style="--hue:{{ hue }}deg">
+        <span class="cover-mark">{{ product.title.split()[:3] | map('first') | join('') | upper }}</span>
+        <span class="tag cover-tag">{{ product.category }}</span>
+      </div>
+
+      <div class="tags" style="margin-top:20px">
         <span class="tag accent">{{ product.category }}</span>
         <span class="tag">{{ product.level }}</span>
         {% for tag in product.tags[:5] %}<span class="tag">{{ tag }}</span>{% endfor %}
       </div>
 
-      <h1>{{ product.title }}</h1>
-      <div class="row muted" style="margin-bottom:20px">
+      <h1 style="margin-top:12px">{{ product.title }}</h1>
+      <p class="lede">{{ product.description }}</p>
+
+      <div class="row muted" style="gap:14px;margin-bottom:8px">
         <span class="rating">{{ product.rating|stars }} {{ "%.1f"|format(product.rating) }}</span>
         <span>·</span>
-        <span>{{ "{:,}".format(product.enrollments) }} enrolled</span>
+        <span>{{ "{:,}".format(product.enrollments) }} students</span>
         <span>·</span>
         <span>{{ product.duration_hours|round|int }} hours</span>
-        {% if product.instructor %}<span>·</span><span>{{ product.instructor }}</span>{% endif %}
       </div>
 
-      <p style="font-size:1.02rem;line-height:1.75">{{ product.description }}</p>
+      {% if product.curriculum %}
+        <section class="section" style="padding-top:28px">
+          <h2>Curriculum</h2>
+          <p class="faint" style="margin-top:-6px">
+            {{ product.curriculum|length }} modules · {{ product.duration_hours|round|int }} hours
+          </p>
+          <ol class="curriculum">
+            {% for module in product.curriculum %}
+              <li>
+                <span class="module-n">{{ loop.index }}</span>
+                <span class="module-title">{{ module }}</span>
+                <span class="module-check" aria-hidden="true">✓</span>
+              </li>
+            {% endfor %}
+          </ol>
+        </section>
+      {% endif %}
+
+      {% if product.instructor %}
+        <section class="section" style="padding-top:8px">
+          <h2>Instructor</h2>
+          <div class="card instructor">
+            <div class="avatar" aria-hidden="true">{{ instructor_initials }}</div>
+            <div>
+              <div class="instructor-name">{{ product.instructor }}</div>
+              <div class="faint">{{ instructor.title }}</div>
+              {% if instructor.bio %}
+                <p class="muted" style="margin:8px 0 0;font-size:0.88rem">{{ instructor.bio }}</p>
+              {% endif %}
+            </div>
+          </div>
+        </section>
+      {% endif %}
+
+      {% if related %}
+        <section class="section" style="padding-top:8px">
+          <h2>Students who explored this also looked at</h2>
+          <div class="grid">
+            {% for product in related %}
+              {% with surface = 'also_explored' %}{% include "_course_card.html" %}{% endwith %}
+            {% endfor %}
+          </div>
+        </section>
+      {% endif %}
     </div>
 
-    <aside>
-      <div class="card" style="position:sticky;top:82px">
-        <div class="price" style="font-size:1.9rem">{{ product.price|money(product.currency) }}</div>
-        <p class="faint" style="margin:6px 0 16px">One-time purchase · lifetime access</p>
+    <aside class="product-aside">
+      {# Adding to a cart needs no account — the sign-in wall used to sit in
+         front of the primary action, which is the one thing a marketplace
+         cannot do. Sign-in is required only at checkout. #}
+      <div class="card buy-card"
+           x-data="buyCard({{ product.id }}, {{ 'true' if enrolled else 'false' }}, {{ 'true' if in_cart else 'false' }})">
+        <div class="faint" style="font-size:0.76rem">One-time price</div>
+        <div class="price" style="font-size:2rem;margin:2px 0 14px">{{ product.price|money(product.currency) }}</div>
 
-        <button class="btn primary" style="width:100%"
-                data-product-id="{{ product.id }}"
-                data-track-click="enroll_intent"
-                data-track-category="{{ product.category }}"
-                data-track-surface="product_page">
-          Enroll now
-        </button>
+        {% if enrolled %}
+          <div class="btn primary is-enrolled" style="width:100%">✓ Enrolled</div>
+          <p class="enroll-note">
+            It's in <a href="/dashboard">your courses</a>. The agent will stop
+            recommending this one and build on it instead.
+          </p>
+        {% else %}
+          <button class="btn primary" style="width:100%"
+                  @click="add()"
+                  :disabled="busy"
+                  x-show="!inCart"
+                  data-product-id="{{ product.id }}"
+                  data-track-click="enroll_intent"
+                  data-track-category="{{ product.category }}"
+                  data-track-title="{{ product.title }}"
+                  data-track-surface="product_page">
+            <span x-show="!busy">🛒 Add to cart</span>
+            <span x-show="busy" x-cloak>Adding…</span>
+          </button>
 
-        <p class="faint center" style="margin:14px 0 0">
-          Your interest here feeds your personalised recommendations.
-        </p>
+          <template x-if="inCart">
+            <div>
+              <a class="btn primary" style="width:100%;text-align:center" href="/cart">Go to cart</a>
+              <button class="btn" style="width:100%;margin-top:8px" @click="remove()" :disabled="busy">
+                Remove from cart
+              </button>
+            </div>
+          </template>
+
+          <p class="alert error" style="margin:12px 0 0" x-show="error" x-cloak x-text="error"></p>
+        {% endif %}
+
+        <ul class="perks">
+          <li>Lifetime access</li>
+          <li>Downloadable code</li>
+          <li>Cohort office hours</li>
+        </ul>
       </div>
+
+      {% if signal_status %}
+        {% include "_signal_panel.html" %}
+      {% endif %}
     </aside>
   </div>
-
-  {% if related %}
-    <section class="section">
-      <div class="section-head"><h2>More in {{ product.category }}</h2></div>
-      <div class="grid">
-        {% for product in related %}
-          {% with surface = 'related' %}{% include "_course_card.html" %}{% endwith %}
-        {% endfor %}
-      </div>
-    </section>
-  {% endif %}
-
 </div>
+{% endblock %}
 
-<style>
-  @media (max-width: 860px) {
-    .product-layout { grid-template-columns: 1fr !important; }
+{% block scripts %}
+<script>
+  // Inline so it is defined during parsing, before deferred Alpine evaluates
+  // the x-data on the buy card.
+  function buyCard(productId, alreadyEnrolled, alreadyInCart) {
+    return {
+      enrolled: alreadyEnrolled,
+      inCart: alreadyInCart,
+      busy: false,
+      error: "",
+
+      async send(method) {
+        if (this.busy) return null;
+        this.busy = true;
+        this.error = "";
+        try {
+          var res = await fetch("/api/cart/" + productId, {
+            method: method,
+            credentials: "same-origin"
+          });
+          if (!res.ok) {
+            this.error = "Could not update your cart — please try again.";
+            return null;
+          }
+          return await res.json();
+        } catch (e) {
+          this.error = "Could not reach the server. Check your connection.";
+          return null;
+        } finally {
+          this.busy = false;
+        }
+      },
+
+      async add() {
+        var data = await this.send("POST");
+        if (data) this.inCart = true;
+      },
+
+      async remove() {
+        var data = await this.send("DELETE");
+        if (data) this.inCart = false;
+      }
+    };
   }
-</style>
+</script>
 {% endblock %}

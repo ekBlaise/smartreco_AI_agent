@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Admin only — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="wrap section">
+  <div class="card center" style="max-width:520px;margin:64px auto;padding:44px 32px">
+    <div class="eyebrow faint" style="letter-spacing:.08em">403 · Admin only</div>
+    <h1 style="font-size:1.5rem;margin:10px 0 8px">This page needs an admin account</h1>
+    <p class="muted" style="margin:0 0 22px">
+      You are signed in as <strong>{{ user.email }}</strong>, which is a learner
+      account. Admin pages manage the catalog and the agent.
+    </p>
+    <div class="row" style="justify-content:center;gap:10px">
+      {# Carry the destination through the sign-out so the right account lands on it. #}
+      <a class="btn primary" href="/logout?next={{ attempted|urlencode }}">Sign in as an admin</a>
+      <a class="btn" href="/dashboard">Back to your recommendations</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,20 @@
+{# Results only. Rendered standalone for the live search fragment
+   (GET /api/search) and included by search.html for the full page, so there is
+   one definition of what a result looks like. #}
+{% if q and products %}
+  <p class="muted" style="margin:0 0 14px">
+    {{ products|length }} match{{ '' if products|length == 1 else 'es' }} for “{{ q }}”
+  </p>
+  <div class="grid">
+    {% for product in products %}
+      {% with surface = 'search' %}{% include "_course_card.html" %}{% endwith %}
+    {% endfor %}
+  </div>
+{% elif q %}
+  <div class="empty">
+    <p>Nothing matched “{{ q }}”.</p>
+    <a class="btn" href="/catalog">Browse the full catalog</a>
+  </div>
+{% else %}
+  <div class="empty">Type a topic in the search box above.</div>
+{% endif %}

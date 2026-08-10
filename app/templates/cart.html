@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Your cart — {{ app_name }}{% endblock %}
+{% block body_attrs %} data-track-page{% endblock %}
+
+{% block content %}
+<div class="wrap section">
+  <div class="section-head">
+    <div>
+      <h1 style="font-size:1.7rem">Your cart</h1>
+      <p class="muted" style="margin:0">
+        {% if items %}{{ items|length }} course{{ '' if items|length == 1 else 's' }} ready to go.
+        {% else %}Nothing here yet.{% endif %}
+      </p>
+    </div>
+  </div>
+
+  {% if items %}
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:32px;align-items:start"
+         class="cart-layout">
+      <div class="card" style="padding:0">
+        {% for item in items %}
+          <div class="cart-row">
+            <div style="min-width:0">
+              <a href="/course/{{ item.product.slug }}"
+                 data-product-id="{{ item.product.id }}"
+                 data-track-title="{{ item.product.title }}"
+                 data-track-surface="cart">
+                <strong>{{ item.product.title }}</strong>
+              </a>
+              <div class="row faint" style="gap:8px;margin-top:4px">
+                <span class="tag accent">{{ item.product.category }}</span>
+                <span>{{ item.product.level }}</span>
+                <span>·</span>
+                <span>{{ item.product.duration_hours|round|int }} hours</span>
+              </div>
+            </div>
+            <div class="price">{{ item.product.price|money(item.product.currency) }}</div>
+            <form method="post" action="/cart/remove/{{ item.product.id }}">
+              <button class="btn small danger">Remove</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+
+      <aside class="card" style="position:sticky;top:82px">
+        <div class="row" style="justify-content:space-between">
+          <span class="muted">Total</span>
+          <span class="price" style="font-size:1.5rem">${{ "%.0f"|format(total) }}</span>
+        </div>
+
+        <form method="post" action="/cart/checkout" style="margin-top:16px">
+          <button class="btn primary" style="width:100%">
+            {% if user %}Complete enrollment{% else %}Sign in to check out{% endif %}
+          </button>
+        </form>
+
+        {% if not user %}
+          <p class="faint" style="margin:12px 0 0;line-height:1.5">
+            Your cart is saved to this browser — it will still be here after you
+            sign in.
+          </p>
+        {% else %}
+          <p class="faint" style="margin:12px 0 0;line-height:1.5">
+            No payment is taken. This is a demo marketplace.
+          </p>
+        {% endif %}
+      </aside>
+    </div>
+  {% else %}
+    <div class="empty">
+      <p>Your cart is empty.</p>
+      <a class="btn primary" href="/catalog">Browse the catalog</a>
+    </div>
+  {% endif %}
+</div>
+
+<style>
+  .cart-row {
+    display: grid; grid-template-columns: minmax(0,1fr) auto auto;
+    gap: 16px; align-items: center;
+    padding: 16px 18px; border-bottom: 1px solid var(--border);
+  }
+  .cart-row:last-child { border-bottom: 0; }
+  .cart-row a:hover strong { color: var(--accent-text); }
+  @media (max-width: 860px) { .cart-layout { grid-template-columns: 1fr !important; } }
+</style>
+{% endblock %}

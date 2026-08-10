@@ -21,6 +21,7 @@ class RecoState(TypedDict, total=False):
     user_id: int
     trigger: str
     behavior: dict[str, Any]      # deterministic summary from ingest.triggers
+    exclude_product_ids: list[int]  # already enrolled — never recommend these
 
     # --- working state ------------------------------------------------------
     profile: dict[str, Any]       # LLM's reading of the behaviour

@@ -1,0 +1,32 @@
+{# Header search dropdown. Anchors are real links, so keyboard navigation is
+   just focus movement and Enter — no roving tabindex to keep in sync. #}
+{% if products %}
+  <ul class="suggest-list" role="listbox">
+    {% for product in products %}
+      <li role="option">
+        <a class="suggest-item" href="/course/{{ product.slug }}"
+           data-suggest-item
+           data-product-id="{{ product.id }}"
+           data-track-title="{{ product.title }}"
+           data-track-category="{{ product.category }}"
+           data-track-click="product_click"
+           data-track-surface="header_suggest">
+          <span class="suggest-title">{{ product.title }}</span>
+          <span class="suggest-meta">
+            <span class="tag accent">{{ product.category }}</span>
+            <span class="faint">{{ product.level }}</span>
+            <span class="price">{{ product.price|money(product.currency) }}</span>
+          </span>
+        </a>
+      </li>
+    {% endfor %}
+  </ul>
+  <a class="suggest-all" href="/search?q={{ q|urlencode }}" data-suggest-item>
+    See all results for “{{ q }}” →
+  </a>
+{% elif q|trim|length >= 2 %}
+  <p class="suggest-empty">
+    Nothing matched “{{ q }}”.
+    <a href="/catalog">Browse the catalog</a>
+  </p>
+{% endif %}

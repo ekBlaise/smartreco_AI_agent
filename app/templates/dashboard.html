@@ -38,7 +38,22 @@
       <div class="n">{{ history|length }}</div>
       <div class="l">Versions generated</div>
     </div>
+    <div class="stat">
+      <div class="n">{{ enrolled|length }}</div>
+      <div class="l">Courses enrolled</div>
+    </div>
   </div>
+
+  {% if enrolled %}
+    <section class="section" style="padding:8px 0 24px">
+      <div class="section-head"><h2>Your courses</h2></div>
+      <div class="grid">
+        {% for product in enrolled %}
+          {% with surface = 'my_courses' %}{% include "_course_card.html" %}{% endwith %}
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
 
   {# Server-rendered first paint — visible before Alpine loads, swapped out on refresh. #}
   <div x-show="!live">
@@ -46,11 +61,17 @@
       {% with reco = status.recommendation %}{% include "_reco_panel.html" %}{% endwith %}
     {% else %}
       <div class="card center" style="padding:48px 24px">
+        {# "Working on it" would contradict the message when the agent is
+           paused rather than busy. #}
         <div class="eyebrow faint" style="letter-spacing:.08em">
-          {{ 'Not enough signal yet' if status.status == 'insufficient_activity' else 'Working on it' }}
+          {% if status.status == 'insufficient_activity' %}Not enough signal yet
+          {% elif status.status == 'unavailable' %}Recommendations paused
+          {% else %}Working on it{% endif %}
         </div>
         <p class="muted" style="max-width:52ch;margin:12px auto 20px">{{ status.message }}</p>
-        <a class="btn primary" href="/catalog">Browse the catalog</a>
+        {% if status.status != 'unavailable' %}
+          <a class="btn primary" href="/catalog">Browse the catalog</a>
+        {% endif %}
       </div>
     {% endif %}
   </div>
@@ -92,9 +113,11 @@
 
       <template x-if="live.status !== 'ready'">
         <div class="card center" style="padding:48px 24px">
-          <div class="eyebrow faint" style="letter-spacing:.08em">Working on it</div>
+          <div class="eyebrow faint" style="letter-spacing:.08em"
+               x-text="live.status === 'unavailable' ? 'Recommendations paused'
+                       : (live.status === 'insufficient_activity' ? 'Not enough signal yet' : 'Working on it')"></div>
           <p class="muted" style="max-width:52ch;margin:12px auto 20px" x-text="live.message"></p>
-          <a class="btn primary" href="/catalog">Browse the catalog</a>
+          <a class="btn primary" href="/catalog" x-show="live.status !== 'unavailable'">Browse the catalog</a>
         </div>
       </template>
     </div>

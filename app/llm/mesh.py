@@ -26,6 +26,32 @@ logger = logging.getLogger(__name__)
 EMBEDDING_CACHE_TTL = 60 * 60 * 24 * 7  # a product's text rarely changes
 
 
+#: Set when Mesh refuses calls for a reason retrying cannot fix (no balance, bad
+#: key). Without it the trigger gates keep firing every minute and every one
+#: burns a failing round-trip and a stack trace, which buries real errors.
+MESH_BLOCKED_KEY = "smartreco:mesh:blocked"
+
+
+def is_billing_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return "spend_limit" in text or "Insufficient balance" in text or "402" in text
+
+
+def mark_unavailable(reason: str, ttl_seconds: int) -> None:
+    cache_set_json(MESH_BLOCKED_KEY, reason, ttl_seconds)
+
+
+def unavailable_reason() -> str | None:
+    """Why Mesh is being skipped right now, or None if it should be tried."""
+    return cache_get_json(MESH_BLOCKED_KEY)
+
+
+def clear_unavailable() -> None:
+    from app.cache import cache_delete
+
+    cache_delete(MESH_BLOCKED_KEY)
+
+
 class MeshNotConfigured(RuntimeError):
     """Raised when MESH_API_KEY is missing — we never silently fake AI output."""
 

@@ -17,6 +17,7 @@ from app.catalog_data import COURSES
 from app.config import settings
 from app.database import Base, engine, init_db, session_scope
 from app.models import Product, Role, User
+from app.catalog_people import CURRICULA
 from app.security import hash_password
 from app.vector import store, sync
 
@@ -79,6 +80,7 @@ def seed_products(session) -> tuple[int, int, list[Product]]:
         product.rating = spec["rating"]
         product.enrollments = spec["enrollments"]
         product.tags = spec["tags"]
+        product.curriculum = CURRICULA.get(spec["slug"], [])
         product.is_active = True
         products.append(product)
     session.flush()

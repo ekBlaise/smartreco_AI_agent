@@ -312,3 +312,419 @@ footer.site { border-top: 1px solid var(--border); padding: 28px 0; margin-top: 
   header.site .inner { height: auto; padding: 12px 0; flex-wrap: wrap; }
   .searchbar { order: 3; max-width: none; flex-basis: 100%; }
 }
+
+/* --- admin dashboard ------------------------------------------------------ */
+
+.admin-tabs {
+  display: flex; gap: 4px; margin-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+.admin-tabs a {
+  padding: 9px 14px; font-size: 0.88rem; font-weight: 550;
+  color: var(--text-faint); border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.admin-tabs a:hover { color: var(--text); }
+.admin-tabs a.active { color: var(--accent-text); border-bottom-color: var(--accent); }
+
+/* Status colours are shared by pills, dots, cards and bars. */
+.is-ok    { --state: var(--green); }
+.is-empty,
+.is-degraded,
+.is-unconfigured { --state: var(--gold); }
+.is-down,
+.is-error { --state: var(--red); }
+
+.health-pill {
+  display: inline-flex; align-items: center; gap: 8px; flex: none;
+  padding: 6px 14px; border-radius: 999px; font-size: 0.82rem; font-weight: 550;
+  color: var(--state, var(--text-dim));
+  background: color-mix(in srgb, var(--state, var(--text-faint)) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--state, var(--text-faint)) 35%, transparent);
+}
+.health-pill .dot,
+.health-name .dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: var(--state, var(--text-faint));
+  box-shadow: 0 0 8px color-mix(in srgb, var(--state, transparent) 70%, transparent);
+}
+
+.health-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px; margin-bottom: 8px;
+}
+.health-card {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-left: 3px solid var(--state, var(--border-bright));
+  border-radius: var(--radius-sm); padding: 12px 14px;
+}
+.health-name { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 0.9rem; }
+.health-detail {
+  font-family: var(--mono); font-size: 0.72rem; color: var(--text-faint);
+  margin-top: 5px; line-height: 1.45;
+}
+
+.stat .n .unit { font-size: 0.9rem; font-weight: 500; color: var(--text-faint); }
+.stat .n.good { color: var(--green); font-size: 1.3rem; }
+.stat .n.bad { color: var(--gold); font-size: 1.3rem; }
+.stat .hint {
+  margin-top: 8px; font-size: 0.76rem; color: var(--text-faint); line-height: 1.5;
+}
+
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+@media (max-width: 820px) { .split { grid-template-columns: 1fr; } }
+
+.card-title {
+  font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-faint); font-weight: 600; margin: 0 0 14px;
+}
+
+/* Bar charts, drawn in CSS — no charting library, nothing to load. */
+.bar-row { display: grid; grid-template-columns: 1fr 2fr auto; align-items: center; gap: 10px; margin-bottom: 8px; }
+.bar-label { font-size: 0.82rem; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { height: 8px; background: var(--bg-input); border-radius: 999px; overflow: hidden; }
+.bar-fill {
+  height: 100%; border-radius: 999px; min-width: 3px;
+  background: var(--state, var(--accent)); transition: width 0.4s ease;
+}
+.bar-fill.is-accent { background: linear-gradient(90deg, var(--accent), var(--accent-text)); }
+.bar-value { font-family: var(--mono); font-size: 0.78rem; color: var(--text); min-width: 3ch; text-align: right; }
+
+.pill {
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
+  font-family: var(--mono); font-size: 0.7rem;
+  color: var(--state, var(--text-dim));
+  background: color-mix(in srgb, var(--state, var(--text-faint)) 14%, transparent);
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips .tag b { color: var(--text); font-weight: 650; }
+
+.table .num { text-align: right; font-family: var(--mono); font-size: 0.8rem; }
+.table .nowrap { white-space: nowrap; }
+.table .path { font-size: 0.72rem; line-height: 1.5; min-width: 240px; }
+
+.run-detail { background: var(--bg); }
+.run-detail td { padding: 0; border-bottom: 1px solid var(--border); }
+.run-detail-inner { padding: 16px 18px; }
+.node-path { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 14px; }
+.node-step {
+  padding: 4px 10px; border-radius: 999px; font-family: var(--mono); font-size: 0.7rem;
+  background: var(--accent-soft); color: var(--accent-text);
+  border: 1px solid rgba(124, 108, 245, 0.28);
+}
+.node-arrow { color: var(--text-faint); font-size: 0.7rem; }
+.node-step.repeat { background: rgba(243, 182, 75, 0.12); color: var(--gold); border-color: rgba(243, 182, 75, 0.3); }
+
+[x-cloak] { display: none !important; }
+
+.detail-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 24px; }
+@media (max-width: 820px) { .detail-grid { grid-template-columns: 1fr; } }
+.detail-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 0.84rem;
+}
+.detail-item:last-child { border-bottom: 0; }
+.detail-item a:hover { color: var(--accent-text); }
+
+a.tag { transition: border-color 0.15s ease, color 0.15s ease; }
+a.tag:hover { color: var(--text); border-color: var(--border-bright); }
+
+.demo-creds {
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.demo-row { display: flex; align-items: center; gap: 8px; font-size: 0.76rem; }
+.demo-row > span { color: var(--text-faint); min-width: 52px; }
+.demo-row code { background: var(--bg-input); padding: 2px 7px; border-radius: 5px; }
+
+/* --- product page --------------------------------------------------------- */
+
+.product-layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) 330px;
+  gap: 40px; margin-top: 16px; align-items: start;
+}
+@media (max-width: 900px) { .product-layout { grid-template-columns: 1fr; gap: 24px; } }
+
+.product-aside { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 82px; }
+@media (max-width: 900px) { .product-aside { position: static; } }
+
+/* Deterministic generated cover - no image assets to ship or load. */
+.course-cover {
+  position: relative; height: 200px; border-radius: var(--radius); overflow: hidden;
+  background:
+    radial-gradient(120% 120% at 20% 0%, hsl(var(--hue) 70% 62% / 0.85), transparent 60%),
+    linear-gradient(135deg, hsl(var(--hue) 55% 46%), hsl(calc(var(--hue) + 40deg) 60% 32%));
+  display: flex; align-items: center; justify-content: center;
+}
+.course-cover::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(115deg, transparent 0 38px, rgba(255,255,255,0.05) 38px 39px);
+}
+.cover-mark {
+  font-size: 2.6rem; font-weight: 750; letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.92); text-shadow: 0 2px 20px rgba(0,0,0,0.25); z-index: 1;
+}
+.cover-tag {
+  position: absolute; left: 14px; bottom: 14px; z-index: 1;
+  background: rgba(0, 0, 0, 0.4); border-color: rgba(255, 255, 255, 0.22); color: #fff;
+}
+
+.lede { font-size: 1.02rem; line-height: 1.75; color: var(--text-dim); margin: 0 0 14px; }
+
+.curriculum {
+  list-style: none; margin: 0; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+}
+.curriculum li {
+  display: flex; align-items: center; gap: 14px; padding: 13px 16px;
+  border-bottom: 1px solid var(--border); background: var(--bg-raised);
+}
+.curriculum li:last-child { border-bottom: 0; }
+.curriculum li:hover { background: var(--bg-input); }
+.module-n {
+  flex: none; width: 24px; height: 24px; border-radius: 7px;
+  display: grid; place-items: center; font-size: 0.74rem; font-weight: 650;
+  background: var(--accent-soft); color: var(--accent-text);
+}
+.module-title { flex: 1; font-size: 0.92rem; }
+.module-check { color: var(--text-faint); font-size: 0.8rem; }
+
+.instructor { display: flex; gap: 16px; align-items: flex-start; }
+.avatar {
+  flex: none; width: 52px; height: 52px; border-radius: 50%;
+  display: grid; place-items: center; font-weight: 700; font-size: 1rem;
+  background: linear-gradient(140deg, var(--accent), var(--accent-text)); color: #fff;
+}
+.instructor-name { font-weight: 650; }
+
+.buy-card .perks {
+  list-style: none; margin: 16px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.buy-card .perks li { font-size: 0.84rem; color: var(--text-dim); display: flex; gap: 9px; align-items: center; }
+.buy-card .perks li::before { content: "check"; content: "\2713"; color: var(--green); font-size: 0.8rem; }
+
+/* --- Live Your Signal panel ----------------------------------------------- */
+
+.signal { padding: 15px; }
+
+.signal-head { display: flex; align-items: center; gap: 10px; margin-bottom: 11px; }
+.signal-heading { min-width: 0; }
+.signal-title { font-weight: 650; font-size: 0.94rem; letter-spacing: -0.01em; }
+.signal-sub { font-family: var(--mono); font-size: 0.67rem; color: var(--text-faint); }
+
+.signal-pulse {
+  width: 26px; height: 26px; border-radius: 8px; flex: none;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px rgba(124, 108, 245, 0.35);
+  position: relative;
+}
+.signal-pulse::after {
+  content: ""; position: absolute; inset: 0; margin: auto;
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent-text);
+  animation: signal-breathe 2.4s ease-in-out infinite;
+}
+@keyframes signal-breathe {
+  0%, 100% { opacity: 0.45; transform: scale(0.8); }
+  50%      { opacity: 1;    transform: scale(1.15); }
+}
+
+.signal-status {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: auto; flex: none;
+  font-family: var(--mono); font-size: 0.64rem; color: var(--text-faint);
+}
+.signal-status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+.signal-status.is-streaming { color: var(--green); }
+.signal-status.is-streaming .dot { background: var(--green); box-shadow: 0 0 7px rgba(70,200,138,0.7); }
+.signal-status.is-thinking { color: var(--gold); }
+.signal-status.is-thinking .dot { background: var(--gold); animation: signal-blink 1s steps(2, start) infinite; }
+@keyframes signal-blink { 50% { opacity: 0.25; } }
+
+/* On a narrow sidebar the dot alone carries the state. */
+@media (max-width: 1040px) { .signal-status-text { display: none; } }
+
+.signal-meter {
+  height: 3px; border-radius: 2px; background: var(--bg-input);
+  overflow: hidden; margin-bottom: 12px;
+}
+.signal-meter-fill {
+  height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-text));
+  transition: width 0.5s ease;
+}
+
+.signal-feed { display: flex; flex-direction: column; gap: 5px; }
+.signal-empty a { color: var(--accent-text); }
+
+.signal-chip {
+  display: flex; align-items: baseline; gap: 6px; min-width: 0;
+  padding: 5px 9px; border-radius: var(--radius-sm);
+  background: var(--bg-input); border: 1px solid var(--border);
+  font-family: var(--mono); font-size: 0.67rem; line-height: 1.4;
+  animation: signal-in 0.3s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+@keyframes signal-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+.signal-chip .verb { color: var(--accent-text); flex: none; }
+.signal-chip .subject {
+  color: var(--text-dim); min-width: 0; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.signal-chip .count { flex: none; color: var(--text-faint); font-size: 0.62rem; }
+.signal-chip.kind-enroll_intent .verb { color: var(--green); }
+.signal-chip.kind-search .verb { color: var(--gold); }
+
+
+.signal-empty { margin: 0; padding: 8px 2px; font-size: 0.76rem; color: var(--text-faint); line-height: 1.5; }
+.signal-empty.pending { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+
+.signal-reco { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.signal-reco .eyebrow {
+  font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--accent-text); margin-bottom: 7px;
+}
+.signal-narrative { margin: 0 0 8px; font-weight: 620; font-size: 0.92rem; line-height: 1.42; }
+
+.signal-why-wrap { margin-bottom: 10px; }
+.signal-why-wrap summary {
+  cursor: pointer; font-size: 0.72rem; color: var(--text-faint);
+  font-family: var(--mono); list-style: none;
+}
+.signal-why-wrap summary::-webkit-details-marker { display: none; }
+.signal-why-wrap summary::before { content: "\25B8  "; }
+.signal-why-wrap[open] summary::before { content: "\25BE  "; }
+.signal-why-wrap summary:hover { color: var(--accent-text); }
+.signal-why { margin: 8px 0 0; font-size: 0.79rem; color: var(--text-dim); line-height: 1.55; }
+
+.signal-items { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+/* One column once the sidebar is too narrow to split without truncating. */
+@media (max-width: 1100px) { .signal-items { grid-template-columns: 1fr; } }
+.signal-item {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  padding: 9px 10px; border-radius: var(--radius-sm);
+  background: var(--bg-input); border: 1px solid var(--border);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.signal-item:hover { border-color: var(--accent); transform: translateY(-1px); }
+.signal-item-title {
+  font-size: 0.78rem; font-weight: 620; line-height: 1.3;
+  /* Two lines keeps both columns the same height whatever the titles are. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.signal-item-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 6px; margin-top: auto;
+}
+.signal-item-foot .tag { padding: 1px 6px; font-size: 0.6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.signal-item-foot .price { font-size: 0.72rem; flex: none; }
+
+.signal-all {
+  display: block; margin-top: 9px; font-family: var(--mono);
+  font-size: 0.66rem; color: var(--text-faint);
+}
+.signal-all:hover { color: var(--accent-text); }
+
+/* --- live search ---------------------------------------------------------- */
+
+.live-search { position: relative; align-items: center; }
+.live-search input[type="search"] {
+  width: 100%; padding: 13px 15px; font-size: 0.95rem;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text);
+}
+.live-search input[type="search"]:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.live-search-state {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  font-family: var(--mono); font-size: 0.68rem; color: var(--text-faint);
+  pointer-events: none;
+}
+
+/* The admin filter keeps its submit button, so the spinner sits left of it. */
+.card.live-search .live-search-state { right: 96px; }
+
+/* --- header search suggestions -------------------------------------------- */
+
+.searchbar { position: relative; }
+
+.suggest {
+  /* Wider than the input it hangs off — course titles do not fit in a header
+     search box, and truncating all of them defeats the point of suggesting. */
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 60;
+  min-width: min(420px, 88vw); max-width: 88vw;
+  background: var(--bg-raised); border: 1px solid var(--border-bright);
+  border-radius: var(--radius); overflow: hidden;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  animation: suggest-in 0.14s ease-out;
+}
+@keyframes suggest-in {
+  from { opacity: 0; transform: translateY(-5px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.suggest-list { list-style: none; margin: 0; padding: 4px; }
+
+.suggest-item {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+}
+.suggest-item:hover,
+.suggest-item:focus {
+  background: var(--accent-soft); outline: none;
+}
+.suggest-item:focus { box-shadow: inset 0 0 0 1px var(--accent); }
+
+.suggest-title {
+  font-size: 0.87rem; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.suggest-meta { display: flex; align-items: center; gap: 8px; font-size: 0.72rem; }
+.suggest-meta .tag { padding: 1px 7px; font-size: 0.66rem; white-space: nowrap; }
+.suggest-meta .price { margin-left: auto; font-size: 0.76rem; }
+
+.suggest-all {
+  display: block; padding: 9px 14px; font-size: 0.76rem;
+  color: var(--text-faint); border-top: 1px solid var(--border);
+  font-family: var(--mono);
+}
+.suggest-all:hover,
+.suggest-all:focus { color: var(--accent-text); background: var(--bg-input); outline: none; }
+
+.suggest-empty { margin: 0; padding: 14px; font-size: 0.82rem; color: var(--text-faint); }
+.suggest-empty a { color: var(--accent-text); }
+
+/* The header collapses the search box on small screens; a floating panel
+   anchored to it would be stranded, so it drops out with the box. */
+@media (max-width: 760px) { .suggest { display: none !important; } }
+
+/* --- enrolment ------------------------------------------------------------ */
+
+.btn.is-enrolled,
+.btn.primary:disabled {
+  background: rgba(70, 200, 138, 0.14); border-color: rgba(70, 200, 138, 0.4);
+  color: var(--green); cursor: default;
+}
+.btn.primary:disabled { opacity: 1; }
+.enroll-note {
+  margin: 12px 0 0; font-size: 0.79rem; color: var(--text-faint); line-height: 1.5;
+}
+.enroll-note a { color: var(--accent-text); }
+
+/* --- header cart ---------------------------------------------------------- */
+
+.cart-link {
+  position: relative; flex: none; font-size: 1.05rem; line-height: 1;
+  padding: 7px 9px; border-radius: var(--radius-sm);
+  filter: grayscale(0.6) opacity(0.75); transition: filter 0.15s, background 0.15s;
+}
+.cart-link:hover { background: var(--bg-raised); filter: none; }
+.cart-link.has-items { filter: none; }
+.cart-count {
+  position: absolute; top: 0; right: 0;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--accent); color: #fff;
+  font-family: var(--mono); font-size: 0.62rem; line-height: 16px; text-align: center;
+}

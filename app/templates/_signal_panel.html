@@ -1,0 +1,96 @@
+{#
+  The live "Your Signal" panel.
+
+  Shown to everyone, signed in or not: anonymous behaviour is genuinely tracked
+  (events are keyed by session), so the people still deciding whether this site
+  understands them are exactly the ones who should see it working.
+
+  Fixed height by construction — the feed is a five-chip tail, not a transcript,
+  and the recommendation underneath is one row of two. The panel sits in a
+  sidebar; it must not grow down the page as someone browses.
+
+  Requires `signal_status` in the context (see app/api/routes/pages.py).
+#}
+{# Single-quoted x-data with |attr_json — see app/api/templating.py for why. #}
+<div class="signal card"
+     x-data='signalPanel({{ {
+       "events": signal_status.events_tracked,
+       "score": signal_status.behavior_score,
+       "needed": signal_status.score_needed,
+       "reco": signal_status.recommendation,
+       "owner": signal_owner,
+     } | attr_json }})'>
+
+  <div class="signal-head">
+    <div class="signal-pulse" aria-hidden="true"></div>
+    <div class="signal-heading">
+      <div class="signal-title">Your Signal</div>
+      <div class="signal-sub" x-text="`${events} action${events === 1 ? '' : 's'} observed`">
+        {{ signal_status.events_tracked }} actions observed
+      </div>
+    </div>
+    <div class="signal-status" :class="'is-' + status" :title="statusLabel">
+      <span class="dot"></span>
+      <span class="signal-status-text" x-text="statusLabel">streaming</span>
+    </div>
+  </div>
+
+  <div class="signal-meter" :title="`interest signal ${score} of ${needed}`">
+      <div class="signal-meter-fill" :style="`width:${progress}%`"
+         style="width:{{ [100, (signal_status.behavior_score / (signal_status.score_needed or 1) * 100)|round|int]|min }}%"></div>
+  </div>
+
+  {# A running tail of what was just observed — newest first, repeats collapsed. #}
+  <div class="signal-feed" role="log" aria-live="polite" aria-label="Tracked activity">
+    <template x-for="chip in visibleChips" :key="chip.id">
+      <div class="signal-chip" :class="'kind-' + chip.kind">
+        <span class="verb" x-text="chip.verb"></span>
+        <span class="subject" x-text="chip.subject" :title="chip.subject"></span>
+        <span class="count" x-show="chip.count > 1" x-text="'×' + chip.count"></span>
+      </div>
+    </template>
+
+    <p class="signal-empty" x-show="chips.length === 0">
+      Browse or search and your actions appear here as the agent records them.
+    </p>
+  </div>
+
+  {# The agent's output: one row, two columns. #}
+  <template x-if="reco">
+    <div class="signal-reco">
+      <div class="eyebrow">✦ Agent · recommendation</div>
+      <p class="signal-narrative" x-text="reco.headline"></p>
+
+      <details class="signal-why-wrap">
+        <summary>Why these</summary>
+        <p class="signal-why" x-text="reco.narrative"></p>
+      </details>
+
+      <div class="signal-items">
+        <template x-for="item in reco.items.slice(0, 2)" :key="item.product_id">
+          <a class="signal-item"
+             :href="`/course/${item.slug}`"
+             :data-product-id="item.product_id"
+             :data-track-title="item.title"
+             data-track-click="reco_click"
+             data-track-surface="signal_panel">
+            <span class="signal-item-title" x-text="item.title"></span>
+            <span class="signal-item-foot">
+              <span class="tag accent" x-text="item.category"></span>
+              <span class="price" x-text="money(item)"></span>
+            </span>
+          </a>
+        </template>
+      </div>
+
+      <a class="signal-all" href="/dashboard">See all recommendations →</a>
+    </div>
+  </template>
+
+  <template x-if="!reco">
+    <p class="signal-empty pending">
+      <span x-show="status === 'thinking'">The agent is reading your activity…</span>
+      <span x-show="status !== 'thinking'">{{ signal_status.message }}</span>
+    </p>
+  </template>
+</div>

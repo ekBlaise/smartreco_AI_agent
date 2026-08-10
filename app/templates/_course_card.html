@@ -2,7 +2,10 @@
 <a class="course" href="/course/{{ product.slug }}"
    data-product-id="{{ product.id }}"
    data-track-category="{{ product.category }}"
-   data-track-surface="{{ surface|default('catalog') }}">
+   data-track-surface="{{ surface|default('catalog') }}"
+   {# The Signal panel reads the title from here, so chips can say what was
+      touched without shipping the title to the server on every event. #}
+   data-track-title="{{ product.title }}">
   <div class="tags">
     <span class="tag accent">{{ product.category }}</span>
     <span class="tag">{{ product.level }}</span>

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_session_id
+from app.api.routes.cart import claim_guest_records
 from app.api.schemas import LoginIn, RegisterIn
 from app.api.templating import templates
 from app.config import settings
@@ -70,6 +74,9 @@ def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
+    # Anything they did before signing in belongs to them now.
+    claim_guest_records(db, user, get_session_id(request))
+
     response = RedirectResponse(_safe_next(next), status_code=status.HTTP_303_SEE_OTHER)
     _set_session(response, user)
     return response
@@ -122,6 +129,9 @@ def register(
     db.commit()
     db.refresh(user)
 
+    # Whatever they browsed, carted or checked out as a guest is theirs.
+    claim_guest_records(db, user, get_session_id(request))
+
     response = RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
     _set_session(response, user)
     return response
@@ -129,7 +139,14 @@ def register(
 
 @router.post("/logout")
 @router.get("/logout")
-def logout():
-    response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
+def logout(next: str = ""):
+    """Sign out, optionally continuing to a sign-in for somewhere specific.
+
+    Used by the admin-only page so "sign in as an admin" lands on the page the
+    learner was trying to reach, instead of dumping them on the homepage to find
+    it again themselves.
+    """
+    target = f"/login?next={quote(_safe_next(next))}" if next else "/"
+    response = RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(SESSION_COOKIE)
     return response

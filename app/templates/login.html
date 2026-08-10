@@ -25,9 +25,17 @@
     <p class="faint center" style="margin:18px 0 0">
       No account? <a href="/register" style="color:var(--accent-text)">Create one</a>
     </p>
-    <p class="faint center" style="margin:14px 0 0">
-      Demo: <code>user@smartreco.dev</code> / <code>user1234</code>
-    </p>
+    {# Both demo accounts, because the admin one is otherwise undiscoverable. #}
+    <div class="demo-creds">
+      <div class="demo-row">
+        <span>Learner</span>
+        <code>user@smartreco.dev</code><code>user1234</code>
+      </div>
+      <div class="demo-row">
+        <span>Admin</span>
+        <code>admin@smartreco.dev</code><code>admin1234</code>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}

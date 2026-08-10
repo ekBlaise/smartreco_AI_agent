@@ -14,12 +14,27 @@ from typing import Any
 from sqlalchemy import event, func, select, update
 from sqlalchemy.orm import Session
 
+from app import realtime
 from app.agent.graph import run_agent
+from app.audience import Audience
 from app.config import settings
 from app.ingest import triggers
 from app.ingest.triggers import BehaviorProfile, TriggerDecision
-from app.llm.mesh import MeshNotConfigured
-from app.models import AgentRun, Event, Product, Recommendation, RecommendationItem, User
+from app.llm.mesh import (
+    MeshNotConfigured,
+    is_billing_error,
+    mark_unavailable,
+    unavailable_reason,
+)
+from app.models import (
+    AgentRun,
+    Enrollment,
+    Event,
+    Product,
+    Recommendation,
+    RecommendationItem,
+    User,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,16 +81,27 @@ def behavior_payload(session: Session, profile: BehaviorProfile) -> dict[str, An
 
 # --- persistence ------------------------------------------------------------
 
-def _next_version(session: Session, user_id: int) -> int:
+def owns_enrollment(audience: Audience):
+    if audience.user_id is not None:
+        return Enrollment.user_id == audience.user_id
+    return Enrollment.session_id == audience.session_id
+
+
+def enrolled_product_ids(session: Session, audience: Audience) -> list[int]:
+    """Courses this audience already owns — excluded from every recommendation."""
+    return list(session.scalars(select(Enrollment.product_id).where(owns_enrollment(audience))))
+
+
+def _next_version(session: Session, audience: Audience) -> int:
     current = session.scalar(
-        select(func.max(Recommendation.version)).where(Recommendation.user_id == user_id)
+        select(func.max(Recommendation.version)).where(triggers.owns(audience))
     )
     return int(current or 0) + 1
 
 
 def persist_recommendation(
     session: Session,
-    user_id: int,
+    audience: Audience,
     profile: BehaviorProfile,
     result: dict[str, Any],
     *,
@@ -87,13 +113,14 @@ def persist_recommendation(
     """Store the new recommendation and retire the previous one."""
     session.execute(
         update(Recommendation)
-        .where(Recommendation.user_id == user_id, Recommendation.is_current.is_(True))
+        .where(triggers.owns(audience), Recommendation.is_current.is_(True))
         .values(is_current=False)
     )
 
     recommendation = Recommendation(
-        user_id=user_id,
-        version=_next_version(session, user_id),
+        user_id=audience.user_id,
+        session_id=None if audience.user_id else audience.session_id,
+        version=_next_version(session, audience),
         headline=result.get("headline", ""),
         narrative=result.get("narrative", ""),
         cta=result.get("cta", ""),
@@ -167,7 +194,7 @@ def _trace_url(run_id: str | None) -> str | None:
 
 def generate_recommendation(
     session: Session,
-    user_id: int,
+    audience: Audience,
     *,
     trigger: str = "behavior",
     force: bool = False,
@@ -177,23 +204,31 @@ def generate_recommendation(
     Returns ``(recommendation_or_None, decision)`` — the decision explains *why*
     nothing was generated, which the dashboard and the tests both rely on.
     """
-    decision = triggers.evaluate(session, user_id, trigger=trigger, force=force)
+    decision = triggers.evaluate(session, audience, trigger=trigger, force=force)
     if not decision.should_generate:
-        logger.info("Skipping generation for user=%s: %s", user_id, decision.reason)
+        logger.info("Skipping generation for %s: %s", audience.key, decision.reason)
+        # A tab may already be showing "thinking" because the tracking endpoint
+        # queued this run optimistically. Stand it back down.
+        realtime.publish_agent_state(audience.key, "idle", decision.reason)
         return None, decision
 
     started = time.perf_counter()
     run = AgentRun(
-        user_id=user_id,
+        user_id=audience.user_id,
         trigger=trigger,
         events_considered=decision.profile.event_count,
     )
 
     try:
         state = {
-            "user_id": user_id,
+            "user_id": audience.user_id,
+            "audience": audience.key,
             "trigger": trigger,
             "behavior": behavior_payload(session, decision.profile),
+            # Never sell someone a course they already own. Recommending an
+            # owned course is the classic failure that makes a recommender look
+            # like it has not been paying attention at all.
+            "exclude_product_ids": enrolled_product_ids(session, audience),
             "attempts": 0,
             "llm_calls": 0,
             "node_path": [],
@@ -212,12 +247,13 @@ def generate_recommendation(
             run.status = "empty"
             run.error = final.get("error") or "agent produced no groundable items"
             session.add(run)
-            logger.warning("Agent returned nothing for user=%s: %s", user_id, run.error)
+            realtime.publish_agent_state(audience.key, "idle", "no_groundable_items")
+            logger.warning("Agent returned nothing for %s: %s", audience.key, run.error)
             return None, decision
 
         recommendation = persist_recommendation(
             session,
-            user_id,
+            audience,
             decision.profile,
             final["result"],
             trigger=trigger,
@@ -229,15 +265,18 @@ def generate_recommendation(
         run.recommendation_id = recommendation.id
         session.add(run)
 
-        # Start the cooldown only once the recommendation is actually durable.
-        # Redis is not part of the database transaction, so writing it here
-        # would leave a user cooled-down for ten minutes with nothing stored if
-        # the caller's commit later failed.
-        _on_commit(session, lambda: triggers.mark_generated(user_id, decision.profile.signature))
+        # Both of these are Redis writes, and Redis is not part of the database
+        # transaction — so they wait for the commit. Starting the cooldown early
+        # would leave a user blocked for ten minutes with nothing stored, and
+        # pushing the recommendation early would show a tab something that then
+        # vanished on rollback.
+        payload = recommendation_payload(recommendation)
+        _on_commit(session, lambda: triggers.mark_generated(audience, decision.profile.signature))
+        _on_commit(session, lambda: realtime.publish(audience.key, {"type": "recommendation", **payload}))
 
         logger.info(
-            "Generated recommendation v%d for user=%s in %dms (%d LLM calls, path=%s)",
-            recommendation.version, user_id, latency_ms, run.llm_calls,
+            "Generated recommendation v%d for %s in %dms (%d LLM calls, path=%s)",
+            recommendation.version, audience.key, latency_ms, run.llm_calls,
             " -> ".join(run.node_path),
         )
         return recommendation, decision
@@ -246,18 +285,38 @@ def generate_recommendation(
         run.status = "unconfigured"
         run.error = str(exc)
         session.add(run)
+        realtime.publish_agent_state(audience.key, "idle", "mesh_not_configured")
         logger.error("Cannot generate recommendations: %s", exc)
         return None, decision
     except Exception as exc:
         run.status = "error"
         run.error = f"{type(exc).__name__}: {exc}"[:2000]
         run.latency_ms = int((time.perf_counter() - started) * 1000)
+        realtime.publish_agent_state(audience.key, "idle", "error")
+
+        if is_billing_error(exc):
+            # Retrying will fail identically until someone tops the account up.
+            # Back off instead of burning a round-trip and a stack trace every
+            # time the trigger fires — that noise buries real failures.
+            run.status = "billing"
+            run.error = "Mesh refused the call: insufficient balance"
+            session.add(run)
+            mark_unavailable(
+                "Mesh has no balance — add credit to resume recommendations.",
+                settings.mesh_backoff_seconds,
+            )
+            logger.error(
+                "Mesh has no balance; pausing generation for %ss",
+                settings.mesh_backoff_seconds,
+            )
+            return None, decision
+
         session.add(run)
-        logger.exception("Agent run failed for user=%s", user_id)
+        logger.exception("Agent run failed for %s", audience.key)
         raise
     finally:
         if decision.lock_key:
-            triggers.clear_lock(user_id)
+            triggers.clear_lock(audience)
 
 
 def _invoke_traced(state: dict) -> tuple[dict, str | None]:
@@ -306,10 +365,10 @@ def recommendation_payload(recommendation: Recommendation) -> dict[str, Any]:
     }
 
 
-def recommendation_status(session: Session, user: User) -> dict[str, Any]:
-    """What the dashboard shows: a recommendation, or an honest reason why not."""
-    recommendation = triggers.current_recommendation(session, user.id)
-    profile = triggers.build_profile(session, user.id)
+def recommendation_status(session: Session, audience: Audience) -> dict[str, Any]:
+    """What the panel shows: a recommendation, or an honest reason why not."""
+    recommendation = triggers.current_recommendation(session, audience)
+    profile = triggers.build_profile(session, audience)
 
     if recommendation is not None:
         return {
@@ -319,6 +378,19 @@ def recommendation_status(session: Session, user: User) -> dict[str, Any]:
             "behavior_score": profile.score,
             "score_needed": settings.reco_score_threshold,
             "message": "",
+        }
+
+    blocked = unavailable_reason()
+    if blocked:
+        # Say what is wrong instead of spinning "the agent is reading your
+        # activity" forever against a call that cannot succeed.
+        return {
+            "status": "unavailable",
+            "recommendation": None,
+            "events_tracked": profile.event_count,
+            "behavior_score": profile.score,
+            "score_needed": settings.reco_score_threshold,
+            "message": blocked,
         }
 
     if profile.event_count < settings.reco_min_events:

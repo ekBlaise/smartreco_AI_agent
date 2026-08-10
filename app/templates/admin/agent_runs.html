@@ -1,77 +1,153 @@
 {% extends "base.html" %}
+{% set admin_tab = 'runs' %}
 {% block title %}Agent runs — Admin — {{ app_name }}{% endblock %}
 
 {% block content %}
-<div class="wrap section">
+<div class="wrap section" x-data="{ open: null }">
 
   <div class="section-head">
     <div>
       <h1 style="font-size:1.7rem">Agent runs</h1>
       <p class="muted" style="margin:0">
-        Every invocation of the LangGraph agent — which nodes it walked, how many
-        Mesh calls it spent, and whether it produced anything.
+        Every invocation of the LangGraph agent — which nodes it walked, what it
+        spent, and what came out. Open a row to see the recommendation it wrote.
       </p>
     </div>
-    <a class="btn" href="/admin/products">← Products</a>
   </div>
 
-  <div class="stats" style="margin-bottom:24px">
-    <div class="stat"><div class="n">{{ total_runs }}</div><div class="l">Agent runs</div></div>
-    <div class="stat"><div class="n">{{ total_llm_calls }}</div><div class="l">Mesh calls</div></div>
-    <div class="stat"><div class="n">{{ avg_latency_ms }}<span class="faint" style="font-size:1rem">ms</span></div><div class="l">Avg latency</div></div>
-    <div class="stat"><div class="n">{{ total_events }}</div><div class="l">Events tracked</div></div>
-    <div class="stat"><div class="n">{{ total_recos }}</div><div class="l">Recommendations</div></div>
+  {% include "admin/_nav.html" %}
+
+  <div class="stats" style="margin-bottom:20px">
+    <div class="stat">
+      <div class="n">{{ efficiency.runs }}</div>
+      <div class="l">Agent runs</div>
+      <div class="hint">{{ efficiency.suppressed }} more were declined before any model call.</div>
+    </div>
+    <div class="stat">
+      <div class="n">{{ efficiency.llm_calls }}</div>
+      <div class="l">Mesh calls</div>
+      <div class="hint">{{ efficiency.calls_per_run or '—' }} per run on average.</div>
+    </div>
+    <div class="stat">
+      <div class="n">{{ efficiency.events_per_run or '—' }}</div>
+      <div class="l">Actions per run</div>
+      <div class="hint">{{ "{:,}".format(ingest.total) }} tracked actions in total.</div>
+    </div>
+    <div class="stat">
+      <div class="n">{{ (efficiency.avg_latency_ms / 1000)|round(1) }}<span class="unit">s</span></div>
+      <div class="l">Average run</div>
+      <div class="hint">Retrieval, grading and generation combined.</div>
+    </div>
   </div>
 
-  <p class="faint" style="margin-bottom:16px">
-    {% if total_runs %}
-      {{ "%.1f"|format(total_events / total_runs) }} tracked actions per agent run —
-      the trigger gates are doing their job when this number stays well above 1.
-    {% endif %}
-  </p>
+  {# Filter by outcome — the failures are the rows worth finding. #}
+  <div class="chips" style="margin-bottom:14px">
+    <a class="tag {{ 'accent' if not status_filter }}" href="/admin/agent-runs">All</a>
+    {% for name, count in efficiency.by_status %}
+      <a class="tag {{ 'accent' if status_filter == name }}"
+         href="/admin/agent-runs?status={{ name }}">{{ name }} <b>{{ count }}</b></a>
+    {% endfor %}
+  </div>
 
-  <div class="card table-scroll">
-    <table>
-      <thead>
-        <tr>
-          <th>When</th><th>User</th><th>Trigger</th><th>Status</th>
-          <th>Path</th><th>Retrievals</th><th>Candidates</th>
-          <th>Mesh calls</th><th>Latency</th><th>Trace</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for run in runs %}
+  {% if runs %}
+    <div class="card" style="padding:0;overflow-x:auto">
+      <table class="table">
+        <thead>
           <tr>
-            <td class="faint" style="white-space:nowrap">{{ run.created_at.strftime('%d %b %H:%M:%S') }}</td>
-            <td class="mono">{{ run.user_id or '—' }}</td>
-            <td><code>{{ run.trigger }}</code></td>
-            <td>
-              {% if run.status == 'ok' %}<span class="tag green">ok</span>
-              {% elif run.status == 'empty' %}<span class="tag">empty</span>
-              {% else %}<span class="tag red" title="{{ run.error }}">{{ run.status }}</span>{% endif %}
-            </td>
-            <td class="mono" style="font-size:0.72rem">{{ (run.node_path or [])|join(' → ') }}</td>
-            <td>{{ run.retrieval_attempts }}</td>
-            <td>{{ run.candidates }}</td>
-            <td>{{ run.llm_calls }}</td>
-            <td>{{ run.latency_ms }}ms</td>
-            <td>
-              {% if run.trace_url %}
-                <a href="{{ run.trace_url }}" target="_blank" rel="noopener"
-                   style="color:var(--accent-text)">LangSmith ↗</a>
-              {% else %}<span class="faint">—</span>{% endif %}
-            </td>
+            <th>When</th><th>User</th><th>Trigger</th><th>Status</th>
+            <th>Path</th>
+            <th class="num">Retries</th><th class="num">Cands</th>
+            <th class="num">Mesh</th><th class="num">Took</th><th></th>
           </tr>
+        </thead>
+        <tbody>
+          {% for run in runs %}
+            <tr @click="open = (open === {{ run.id }} ? null : {{ run.id }})" style="cursor:pointer">
+              <td class="mono nowrap">{{ run.created_at.strftime('%d %b %H:%M:%S') }}</td>
+              <td class="mono faint">{{ run.user.email.split('@')[0] if run.user else '—' }}</td>
+              <td class="mono">{{ run.trigger }}</td>
+              <td><span class="pill is-{{ run.status }}">{{ run.status }}</span></td>
+              <td class="mono faint path">{{ run.node_path|join(' → ') or '—' }}</td>
+              <td class="num">{{ run.retrieval_attempts }}</td>
+              <td class="num">{{ run.candidates }}</td>
+              <td class="num">{{ run.llm_calls }}</td>
+              <td class="num nowrap">{{ (run.latency_ms / 1000)|round(1) }}s</td>
+              <td class="num faint" x-text="open === {{ run.id }} ? '−' : '+'">+</td>
+            </tr>
+
+            <tr class="run-detail" x-show="open === {{ run.id }}" x-cloak>
+              <td colspan="10">
+                <div class="run-detail-inner">
+
+                  <div class="node-path">
+                    {% for node in run.node_path %}
+                      {# A node appearing twice is the self-correction loop firing. #}
+                      <span class="node-step {{ 'repeat' if run.node_path[:loop.index0].count(node) }}">{{ node }}</span>
+                      {% if not loop.last %}<span class="node-arrow">→</span>{% endif %}
+                    {% else %}
+                      <span class="faint">No path recorded.</span>
+                    {% endfor %}
+                  </div>
+
+                  {% if run.error %}
+                    <p class="alert error" style="margin:0">{{ run.error }}</p>
+                  {% endif %}
+
+                  {% set reco = produced.get(run.recommendation_id) %}
+                  {% if reco %}
+                    <div class="detail-grid">
+                      <div>
+                        <div class="card-title">What it wrote</div>
+                        <p style="font-weight:620;margin:0 0 6px">{{ reco.headline }}</p>
+                        <p class="muted" style="margin:0;font-size:0.86rem">{{ reco.narrative }}</p>
+                      </div>
+                      <div>
+                        <div class="card-title">Grounded in</div>
+                        {% for item in reco['items'] %}
+                          <div class="detail-item">
+                            <a href="/course/{{ item.slug }}">{{ item.title }}</a>
+                            <span class="mono faint">{{ "%.2f"|format(item.relevance_score) }}</span>
+                          </div>
+                        {% endfor %}
+                      </div>
+                    </div>
+                  {% elif run.status == 'ok' %}
+                    <p class="faint" style="margin:0">
+                      This run's recommendation has since been superseded.
+                    </p>
+                  {% endif %}
+
+                  {% if run.trace_url %}
+                    <a class="btn small" style="margin-top:12px"
+                       href="{{ run.trace_url }}" target="_blank" rel="noopener">
+                      Open LangSmith trace →
+                    </a>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="card center" style="padding:48px 24px">
+      <p class="faint" style="margin:0 0 6px">
+        {% if status_filter %}
+          No runs with status “{{ status_filter }}”.
         {% else %}
-          <tr>
-            <td colspan="10" class="empty">
-              No agent runs yet. Browse the catalog as a signed-in user to trigger one.
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+          The agent has not run yet.
+        {% endif %}
+      </p>
+      {% if status_filter %}
+        <a class="btn small" href="/admin/agent-runs">Show all runs</a>
+      {% else %}
+        <p class="faint" style="margin:0">
+          Browse the catalog as a learner — it wakes once the trigger gates pass.
+        </p>
+      {% endif %}
+    </div>
+  {% endif %}
 
 </div>
 {% endblock %}

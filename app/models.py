@@ -90,6 +90,9 @@ class User(Base):
     recommendations: Mapped[list["Recommendation"]] = relationship(
         back_populates="user", order_by="Recommendation.created_at.desc()"
     )
+    enrollments: Mapped[list["Enrollment"]] = relationship(
+        back_populates="user", order_by="Enrollment.created_at.desc()"
+    )
 
     @property
     def is_admin(self) -> bool:
@@ -127,6 +130,10 @@ class Product(Base):
     rating: Mapped[float] = mapped_column(Float, default=0)
     enrollments: Mapped[int] = mapped_column(Integer, default=0)
     tags: Mapped[list] = mapped_column(JSON, default=list)
+    #: Ordered module titles shown on the course page. Part of the embedded
+    #: document too — what a course *teaches* is exactly what a learner is
+    #: searching for, and it was previously invisible to retrieval.
+    curriculum: Mapped[list] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -159,6 +166,11 @@ class Product(Base):
         if self.instructor:
             parts.append(f"Taught by: {self.instructor}")
         parts.extend(["", self.description or ""])
+        if self.curriculum:
+            # Module titles are the most literal statement of what a course
+            # teaches, and often match a learner's search wording better than
+            # the marketing description does.
+            parts.extend(["", "Curriculum: " + "; ".join(str(m) for m in self.curriculum)])
         return "\n".join(parts).strip()
 
     @property
@@ -241,14 +253,19 @@ class Recommendation(Base):
 
     __tablename__ = "recommendations"
     __table_args__ = (
+        # Versions are unique per owner; for a guest the owner is the session.
         UniqueConstraint("user_id", "version", name="uq_reco_user_version"),
+        UniqueConstraint("session_id", "version", name="uq_reco_session_version"),
         Index("ix_reco_user_created", "user_id", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    #: One of these identifies the owner: an account when signed in, otherwise
+    #: the browser session. Guests are tracked and so guests get recommendations.
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), default=None, index=True
     )
+    session_id: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
 
     headline: Mapped[str] = mapped_column(String(200))
@@ -319,3 +336,66 @@ class AgentRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped["User | None"] = relationship()
+    #: What this run produced, so the admin view can show a node path next to
+    #: its actual output. Nulled rather than cascaded when a recommendation is
+    #: retired — the run still happened and still cost what it cost.
+    recommendation: Mapped["Recommendation | None"] = relationship()
+
+
+class Enrollment(Base):
+    """A learner has actually bought/started a course.
+
+    Distinct from the ``enroll_intent`` *event*, which records that someone
+    pressed the button. The event is behaviour and stays in the log forever; this
+    is state, and it is what stops the agent recommending a course the learner
+    already owns — the classic recommender failure that makes a system look like
+    it is not paying attention.
+    """
+
+    __tablename__ = "enrollments"
+    __table_args__ = (
+        # One row per learner per course; pressing Enroll twice is not an error.
+        UniqueConstraint("user_id", "product_id", name="uq_enrollment_user_product"),
+        UniqueConstraint("session_id", "product_id", name="uq_enrollment_session_product"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), default=None, index=True
+    )
+    #: Set for guest checkouts. Claimed by the account on sign-in.
+    session_id: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped["User | None"] = relationship(back_populates="enrollments")
+    product: Mapped["Product"] = relationship()
+
+
+class CartItem(Base):
+    """A course a visitor intends to buy.
+
+    Keyed by ``session_id``, not ``user_id``, so a signed-out visitor gets a
+    real cart. The session cookie survives signing in, so the cart follows them
+    through it rather than being thrown away at the door — ``user_id`` is filled
+    in once known, purely so carts can be attributed later.
+    """
+
+    __tablename__ = "cart_items"
+    __table_args__ = (
+        UniqueConstraint("session_id", "product_id", name="uq_cart_session_product"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), default=None, index=True
+    )
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    product: Mapped["Product"] = relationship()

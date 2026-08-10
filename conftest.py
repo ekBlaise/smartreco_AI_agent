@@ -29,10 +29,11 @@ os.environ["SMTP_HOST"] = ""
 os.environ["REDIS_URL"] = "redis://localhost:6379/15"
 
 import fakeredis  # noqa: E402
+import fakeredis.aioredis  # noqa: E402
 import pytest  # noqa: E402
 from qdrant_client import QdrantClient  # noqa: E402
 
-from app import cache  # noqa: E402
+from app import cache, realtime  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.models import Product, Role, User  # noqa: E402
@@ -84,11 +85,24 @@ def fake_mesh(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def fake_redis():
-    client = fakeredis.FakeStrictRedis(decode_responses=True)
+    """One fake Redis, shared by the sync client and the async pub/sub client.
+
+    Both must see the same keyspace: a test publishes through the sync client
+    and reads it back through the SSE stream's async one. Without the async
+    factory override, `realtime.subscribe` would connect to whatever Redis is
+    actually listening on this machine — so the suite would pass, fail, or hang
+    depending on whether a container happened to be running.
+    """
+    server = fakeredis.FakeServer()
+    client = fakeredis.FakeStrictRedis(server=server, decode_responses=True)
     cache.set_redis(client)
+    realtime.set_async_client_factory(
+        lambda: fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
+    )
     yield client
     client.flushall()
     cache.set_redis(None)
+    realtime.set_async_client_factory(None)
 
 
 @pytest.fixture(autouse=True)
@@ -203,6 +217,17 @@ def logged_in(client, learner):
     response = client.post(
         "/login",
         data={"email": learner.email, "password": "learner1234", "next": "/dashboard"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
+    return client
+
+
+@pytest.fixture
+def admin_client(client, admin):
+    response = client.post(
+        "/login",
+        data={"email": admin.email, "password": "admin1234", "next": "/admin"},
         follow_redirects=False,
     )
     assert response.status_code == 303, response.text

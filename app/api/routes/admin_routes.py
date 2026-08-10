@@ -13,17 +13,20 @@ import re
 import unicodedata
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import health
+from app.api import admin_metrics
 from app.api.deps import require_admin_page
 from app.api.schemas import ProductIn
 from app.api.templating import templates
 from app.database import get_db
-from app.models import AgentRun, Event, Product, Recommendation, User
+from app.models import AgentRun, Product, User
+from app.service import recommendation_payload
 from app.vector import sync
 
 logger = logging.getLogger(__name__)
@@ -60,6 +63,7 @@ def unique_slug(db: Session, title: str, exclude_id: int | None = None) -> str:
 def _parse_form(
     title: str, description: str, category: str, level: str, price: str,
     instructor: str, duration_hours: str, rating: str, tags: str, is_active: bool,
+    curriculum: str = "",
 ) -> ProductIn:
     def num(raw: str, default: float = 0.0) -> float:
         try:
@@ -77,6 +81,7 @@ def _parse_form(
         duration_hours=num(duration_hours),
         rating=min(5.0, max(0.0, num(rating))),
         tags=[t.strip() for t in (tags or "").split(",") if t.strip()],
+        curriculum=[m.strip() for m in (curriculum or "").splitlines() if m.strip()],
         is_active=is_active,
     )
 
@@ -92,25 +97,93 @@ def _apply(product: Product, payload: ProductIn) -> None:
     product.duration_hours = payload.duration_hours
     product.rating = payload.rating
     product.tags = payload.tags
+    product.curriculum = payload.curriculum
     product.is_active = payload.is_active
 
 
 def _dual_write(db: Session, product: Product) -> str | None:
-    """Push the product into Qdrant. Returns an error message, or None."""
+    """Push the product into Qdrant. Returns an error message, or None.
+
+    ``sync_products`` reports failure in its return value rather than raising —
+    it flags the row for the reconciler and carries on with the rest of the
+    batch. So the result has to be *inspected*: catching exceptions alone would
+    report a confident success while the product sat unindexed and invisible to
+    every recommendation.
+    """
     try:
-        sync.sync_product(db, product, force=True)
-    except Exception as exc:
-        logger.exception("Vector write failed for product %s", product.id)
+        result = sync.sync_product(db, product, force=True)
+    except Exception as exc:  # safety net — sync is not expected to raise
+        logger.exception("Vector write raised for product %s", product.id)
         product.vector_sync_error = f"{type(exc).__name__}: {exc}"[:500]
         db.flush()
-        return (
-            "Saved to the database, but the vector store write failed "
-            f"({type(exc).__name__}). It will be retried automatically."
-        )
+        return _explain_vector_failure(product.vector_sync_error)
+
+    if result.get("failed"):
+        return _explain_vector_failure(product.vector_sync_error)
     return None
 
 
+def _explain_vector_failure(raw: str | None) -> str:
+    """Turn a driver-level error into something an admin can act on."""
+    detail = raw or "unknown error"
+    prefix = (
+        "Saved to the database, but it is NOT searchable yet — the vector write failed. "
+    )
+    retry = " It will be retried automatically every 15 minutes."
+
+    if "spend_limit" in detail or "402" in detail:
+        return (
+            prefix
+            + "Mesh refused the embedding call because the account has no balance. "
+            "Embedding models are paid; add credit and the product will be indexed."
+            + retry
+        )
+    if "Connection" in detail or "refused" in detail or "timed out" in detail:
+        return prefix + "Qdrant is unreachable." + retry
+    return prefix + detail[:200] + retry
+
+
+def _filtered_products(db: Session, q: str) -> list[Product]:
+    """Catalog rows for the admin table, optionally filtered by title."""
+    stmt = select(Product).order_by(Product.updated_at.desc())
+    if q.strip():
+        stmt = stmt.where(Product.title.ilike(f"%{q.strip()}%"))
+    return list(db.scalars(stmt.limit(200)))
+
+
 @router.get("", response_class=HTMLResponse)
+def dashboard(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin_page),
+):
+    """Operational overview: is it healthy, is it working, is it efficient?"""
+    components = health.snapshot(db)
+    return templates.TemplateResponse(
+        request,
+        "admin/dashboard.html",
+        {
+            "user": admin,
+            "components": components,
+            "overall": health.worst(components),
+            # A full buffer means something different depending on whether
+            # anything is draining it, so the page needs to know.
+            "worker_online": any(
+                c["name"] == "Celery worker" and c["status"] == health.OK for c in components
+            ),
+            "sync": sync.sync_status(db),
+            "catalog": admin_metrics.catalog(db),
+            "ingest": admin_metrics.ingest(db),
+            "efficiency": admin_metrics.efficiency(db),
+            "recos": admin_metrics.recommendations(db),
+            "audience": admin_metrics.audience(db),
+            "demand": admin_metrics.demand(db),
+            "recent_runs": admin_metrics.recent_runs(db),
+            "categories": [],
+        },
+    )
+
+
 @router.get("/products", response_class=HTMLResponse)
 def product_list(
     request: Request,
@@ -120,23 +193,37 @@ def product_list(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin_page),
 ):
-    stmt = select(Product).order_by(Product.updated_at.desc())
-    if q.strip():
-        stmt = stmt.where(Product.title.ilike(f"%{q.strip()}%"))
-    products = list(db.scalars(stmt.limit(200)))
-
     return templates.TemplateResponse(
         request,
         "admin/products.html",
         {
             "user": admin,
-            "products": products,
+            "products": _filtered_products(db, q),
             "q": q,
             "notice": notice,
             "error": error,
             "sync": sync.sync_status(db),
             "categories": [],
         },
+    )
+
+
+@router.get("/products/table", response_class=HTMLResponse)
+def product_table(
+    request: Request,
+    q: str = "",
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin_page),
+):
+    """Just the catalog table, for the live filter.
+
+    Rendered from the same partial as the full page, so the rows — including
+    the Alpine bindings on the Edit buttons — are identical either way.
+    """
+    return templates.TemplateResponse(
+        request,
+        "admin/_product_table.html",
+        {"user": admin, "products": _filtered_products(db, q), "q": q},
     )
 
 
@@ -151,6 +238,7 @@ def create_product(
     duration_hours: str = Form("0"),
     rating: str = Form("0"),
     tags: str = Form(""),
+    curriculum: str = Form(""),
     is_active: bool = Form(False),
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin_page),
@@ -158,7 +246,7 @@ def create_product(
     try:
         payload = _parse_form(
             title, description, category, level, price,
-            instructor, duration_hours, rating, tags, is_active,
+            instructor, duration_hours, rating, tags, is_active, curriculum,
         )
     except ValidationError as exc:
         return _back(error=_first_error(exc))
@@ -188,6 +276,7 @@ def update_product(
     duration_hours: str = Form("0"),
     rating: str = Form("0"),
     tags: str = Form(""),
+    curriculum: str = Form(""),
     is_active: bool = Form(False),
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin_page),
@@ -199,7 +288,7 @@ def update_product(
     try:
         payload = _parse_form(
             title, description, category, level, price,
-            instructor, duration_hours, rating, tags, is_active,
+            instructor, duration_hours, rating, tags, is_active, curriculum,
         )
     except ValidationError as exc:
         return _back(error=_first_error(exc))
@@ -260,20 +349,23 @@ def resync(
 @router.get("/agent-runs", response_class=HTMLResponse)
 def agent_runs(
     request: Request,
+    status_filter: str = Query("", alias="status"),
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin_page),
 ):
     """Observability: what the agent did, how often, and how much it cost."""
-    runs = list(
-        db.scalars(select(AgentRun).order_by(AgentRun.created_at.desc()).limit(50))
-    )
-    totals = db.execute(
-        select(
-            func.count(AgentRun.id),
-            func.coalesce(func.sum(AgentRun.llm_calls), 0),
-            func.coalesce(func.avg(AgentRun.latency_ms), 0),
-        )
-    ).one()
+    stmt = select(AgentRun).order_by(AgentRun.created_at.desc())
+    if status_filter:
+        stmt = stmt.where(AgentRun.status == status_filter)
+    runs = list(db.scalars(stmt.limit(60)))
+
+    # The recommendation each run produced, so a row can be expanded to show
+    # what the node path actually resulted in — the point of the whole run.
+    produced = {
+        run.recommendation_id: recommendation_payload(run.recommendation)
+        for run in runs
+        if run.recommendation_id and run.recommendation is not None
+    }
 
     return templates.TemplateResponse(
         request,
@@ -281,11 +373,10 @@ def agent_runs(
         {
             "user": admin,
             "runs": runs,
-            "total_runs": totals[0],
-            "total_llm_calls": int(totals[1] or 0),
-            "avg_latency_ms": int(totals[2] or 0),
-            "total_events": db.scalar(select(func.count(Event.id))) or 0,
-            "total_recos": db.scalar(select(func.count(Recommendation.id))) or 0,
+            "produced": produced,
+            "status_filter": status_filter,
+            "efficiency": admin_metrics.efficiency(db),
+            "ingest": admin_metrics.ingest(db),
             "categories": [],
         },
     )

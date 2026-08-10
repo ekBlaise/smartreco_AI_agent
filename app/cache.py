@@ -111,25 +111,51 @@ def release_lock(key: str) -> None:
 
 # --- key builders -----------------------------------------------------------
 
-def reco_lock_key(user_id: int) -> str:
-    return f"smartreco:reco:lock:{user_id}"
+def reco_lock_key(key: str) -> str:
+    return f"smartreco:reco:lock:{key}"
 
 
-def reco_signature_key(user_id: int) -> str:
-    return f"smartreco:reco:signature:{user_id}"
+def reco_signature_key(key: str) -> str:
+    return f"smartreco:reco:signature:{key}"
 
 
-def reco_cooldown_key(user_id: int) -> str:
-    return f"smartreco:reco:cooldown:{user_id}"
+def reco_cooldown_key(key: str) -> str:
+    return f"smartreco:reco:cooldown:{key}"
 
 
-def reco_queued_key(user_id: int) -> str:
+def reco_queued_key(key: str) -> str:
     """Short-lived marker that a task is already on the queue for this user.
 
     Distinct from the in-flight lock: this dedupes *enqueueing* (many tracking
     batches arriving at once), while the lock dedupes *executing*.
     """
-    return f"smartreco:reco:queued:{user_id}"
+    return f"smartreco:reco:queued:{key}"
+
+
+#: Counter of generations the trigger gates suppressed, keyed by reason.
+#: The whole efficiency story is "we did *not* call the model" — which leaves no
+#: trace anywhere unless we count it deliberately.
+SKIP_COUNTER_KEY = "smartreco:skips"
+
+
+def incr_counter(key: str, field: str) -> None:
+    client = get_redis()
+    if client is None:
+        return
+    try:
+        client.hincrby(key, field, 1)
+    except Exception:
+        pass
+
+
+def counters(key: str) -> dict[str, int]:
+    client = get_redis()
+    if client is None:
+        return {}
+    try:
+        return {k: int(v) for k, v in (client.hgetall(key) or {}).items()}
+    except Exception:
+        return {}
 
 
 def retrieval_cache_key(query_hash: str) -> str:

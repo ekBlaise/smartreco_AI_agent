@@ -1,8 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Products — Admin — {{ app_name }}{% endblock %}
+{% set admin_tab = 'products' %}
+{% block title %}Catalog — Admin — {{ app_name }}{% endblock %}
 
 {% block content %}
-<div class="wrap section" x-data="{ editing: null, creating: false }">
+<div class="wrap section" x-data="adminCatalog('{{ q|e }}')">
 
   <div class="section-head">
     <div>
@@ -11,11 +12,10 @@
         Every save writes to PostgreSQL <em>and</em> Qdrant. Rows out of sync are re-pushed automatically.
       </p>
     </div>
-    <div class="row">
-      <a class="btn" href="/admin/agent-runs">Agent runs →</a>
-      <button class="btn primary" @click="creating = true">Add product</button>
-    </div>
+    <button class="btn primary" @click="creating = true">Add product</button>
   </div>
+
+  {% include "admin/_nav.html" %}
 
   {% if notice %}<div class="alert ok">{{ notice }}</div>{% endif %}
   {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
@@ -47,58 +47,19 @@
     <div class="alert error">Qdrant unreachable: {{ sync.vector_error }}</div>
   {% endif %}
 
-  <form class="row card" method="get" action="/admin/products" style="margin-bottom:18px">
-    <input type="search" name="q" value="{{ q }}" placeholder="Filter by title…" style="flex:1">
+  {# Live filter. Still a real GET form, so it works without JavaScript; the
+     input just also fetches the table fragment as you type. #}
+  <form class="row card live-search" method="get" action="/admin/products"
+        style="margin-bottom:18px" @submit.prevent="run()">
+    <input type="search" name="q" x-model="q" @input="schedule()"
+           value="{{ q }}" placeholder="Filter by title…" style="flex:1"
+           autocomplete="off" aria-label="Filter products by title">
+    <span class="live-search-state" x-show="busy" x-cloak>filtering…</span>
     <button class="btn">Search</button>
   </form>
 
-  <div class="card table-scroll">
-    <table>
-      <thead>
-        <tr>
-          <th>Title</th><th>Category</th><th>Level</th><th>Price</th>
-          <th>Vector</th><th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for p in products %}
-          <tr>
-            <td>
-              <strong>{{ p.title }}</strong>
-              {% if not p.is_active %}<span class="tag red" style="margin-left:6px">hidden</span>{% endif %}
-              <div class="faint mono">{{ p.slug }}</div>
-            </td>
-            <td>{{ p.category }}</td>
-            <td>{{ p.level }}</td>
-            <td>{{ p.price|money(p.currency) }}</td>
-            <td>
-              {% if p.vector_in_sync %}
-                <span class="tag green">synced</span>
-              {% elif p.vector_sync_error %}
-                <span class="tag red" title="{{ p.vector_sync_error }}">failed</span>
-              {% else %}
-                <span class="tag">pending</span>
-              {% endif %}
-            </td>
-            <td style="white-space:nowrap;text-align:right">
-              <button class="btn small" @click='editing = {{ {
-                "id": p.id, "title": p.title, "description": p.description,
-                "category": p.category, "level": p.level, "price": p.price|float,
-                "instructor": p.instructor, "duration_hours": p.duration_hours,
-                "rating": p.rating, "tags": (p.tags or [])|join(", "),
-                "is_active": p.is_active
-              }|tojson }}'>Edit</button>
-              <form method="post" action="/admin/products/{{ p.id }}/delete" style="display:inline"
-                    onsubmit="return confirm('Delete “{{ p.title|e }}” from both stores?')">
-                <button class="btn small danger">Delete</button>
-              </form>
-            </td>
-          </tr>
-        {% else %}
-          <tr><td colspan="6" class="empty">No products yet.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div x-ref="table">
+    {% include "admin/_product_table.html" %}
   </div>
 
   {# --- create / edit modal ------------------------------------------------ #}
@@ -161,6 +122,16 @@
             <input name="tags" :value="editing ? editing.tags : ''"
                    placeholder="langgraph, agents, python">
           </div>
+          <div class="field">
+            <label>Curriculum (one module per line)</label>
+            <textarea name="curriculum" rows="6"
+                      placeholder="State machines for agents&#10;Tool routing patterns&#10;Ship: a production agent"
+                      x-text="editing ? editing.curriculum.join('\n') : ''"></textarea>
+            <p class="faint" style="margin:6px 0 0;font-size:0.74rem">
+              Shown on the course page, and included in the text sent to the
+              embedding model — module titles often match how learners search.
+            </p>
+          </div>
           <div class="field row">
             <input type="checkbox" name="is_active" value="true" style="width:auto"
                    :checked="editing ? editing.is_active : true">
@@ -177,4 +148,54 @@
   </template>
 
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Inline, not deferred: Alpine starts as soon as it loads and evaluates
+  // x-data immediately, so this has to be defined during parsing.
+  function adminCatalog(initial) {
+    return {
+      // Modal state, unchanged — the filter shares this component so injected
+      // rows can still open the editor.
+      editing: null,
+      creating: false,
+
+      q: initial,
+      busy: false,
+      timer: null,
+      controller: null,
+
+      schedule() {
+        clearTimeout(this.timer);
+        this.timer = setTimeout(() => this.run(), 250);
+      },
+
+      async run() {
+        var q = this.q.trim();
+        // Abort the previous request: a slow early response must not land on
+        // top of a fast later one and show the wrong rows.
+        if (this.controller) this.controller.abort();
+        this.controller = new AbortController();
+        this.busy = true;
+
+        try {
+          var res = await fetch("/admin/products/table?q=" + encodeURIComponent(q), {
+            credentials: "same-origin",
+            signal: this.controller.signal
+          });
+          if (!res.ok) return;
+          // Alpine's mutation observer initialises the new rows, so the Edit
+          // buttons inside them keep working.
+          this.$refs.table.innerHTML = await res.text();
+          window.history.replaceState({}, "", q ? "/admin/products?q=" + encodeURIComponent(q) : "/admin/products");
+        } catch (e) {
+          /* aborted or offline — leave the current rows in place */
+        } finally {
+          this.busy = false;
+        }
+      }
+    };
+  }
+</script>
 {% endblock %}

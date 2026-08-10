@@ -1,0 +1,6 @@
+{# Shared admin sub-navigation. Set `admin_tab` before including. #}
+<nav class="admin-tabs">
+  <a href="/admin" class="{{ 'active' if admin_tab == 'overview' }}">Overview</a>
+  <a href="/admin/products" class="{{ 'active' if admin_tab == 'products' }}">Catalog</a>
+  <a href="/admin/agent-runs" class="{{ 'active' if admin_tab == 'runs' }}">Agent runs</a>
+</nav>

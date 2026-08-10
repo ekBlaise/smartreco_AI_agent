@@ -28,14 +28,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.cache import (
+    SKIP_COUNTER_KEY,
     acquire_lock,
     cache_get_json,
     cache_set_json,
+    incr_counter,
     reco_cooldown_key,
     reco_lock_key,
     reco_signature_key,
     release_lock,
 )
+from app.audience import Audience
 from app.config import settings
 from app.models import Event, Product, Recommendation
 
@@ -51,7 +54,7 @@ _STOPWORDS = {
 class BehaviorProfile:
     """A cheap, deterministic read of what the user has been doing."""
 
-    user_id: int
+    audience: Audience
     events: list[Event] = field(default_factory=list)
     score: int = 0
     categories: list[tuple[str, int]] = field(default_factory=list)
@@ -88,24 +91,42 @@ class TriggerDecision:
     lock_key: str | None = None
 
 
+def _decline(reason: str, profile: BehaviorProfile, **kwargs) -> TriggerDecision:
+    """Refuse to generate, and record why.
+
+    Every one of these is an LLM call that did not happen. Counting them is the
+    only way the efficiency of these gates is visible anywhere — a run that never
+    happens leaves no log line, no agent_runs row, and no bill.
+    """
+    incr_counter(SKIP_COUNTER_KEY, reason)
+    return TriggerDecision(False, reason, profile, **kwargs)
+
+
 def _tokenize(text: str) -> list[str]:
     words = re.findall(r"[a-z0-9+#.]{3,}", (text or "").lower())
     return [w for w in words if w not in _STOPWORDS]
 
 
-def build_profile(session: Session, user_id: int) -> BehaviorProfile:
-    """Read the user's recent behaviour and reduce it to a signature."""
+def _owned_by(audience: Audience):
+    """Match this audience's events: their account, or their session."""
+    if audience.user_id is not None:
+        return Event.user_id == audience.user_id
+    return Event.session_id == audience.session_id
+
+
+def build_profile(session: Session, audience: Audience) -> BehaviorProfile:
+    """Read this audience's recent behaviour and reduce it to a signature."""
     since = datetime.now(timezone.utc) - timedelta(hours=settings.reco_behavior_window_hours)
     events = list(
         session.scalars(
             select(Event)
-            .where(Event.user_id == user_id, Event.occurred_at >= since)
+            .where(_owned_by(audience), Event.occurred_at >= since)
             .order_by(Event.occurred_at.desc())
             .limit(400)
         )
     )
 
-    profile = BehaviorProfile(user_id=user_id, events=events)
+    profile = BehaviorProfile(audience=audience, events=events)
     if not events:
         profile.signature = _hash([])
         return profile
@@ -168,17 +189,24 @@ def _hash(parts: list[str]) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
-def current_recommendation(session: Session, user_id: int) -> Recommendation | None:
+def owns(audience: Audience):
+    """Match recommendations belonging to this audience."""
+    if audience.user_id is not None:
+        return Recommendation.user_id == audience.user_id
+    return Recommendation.session_id == audience.session_id
+
+
+def current_recommendation(session: Session, audience: Audience) -> Recommendation | None:
     return session.scalar(
         select(Recommendation)
-        .where(Recommendation.user_id == user_id, Recommendation.is_current.is_(True))
+        .where(owns(audience), Recommendation.is_current.is_(True))
         .order_by(Recommendation.created_at.desc())
     )
 
 
 def evaluate(
     session: Session,
-    user_id: int,
+    audience: Audience,
     trigger: str = "behavior",
     force: bool = False,
     acquire: bool = True,
@@ -191,47 +219,45 @@ def evaluate(
     duration of the run. If the endpoint took the lock itself, the task it just
     queued would be turned away by it.
     """
-    profile = build_profile(session, user_id)
-    lock = reco_lock_key(user_id)
+    profile = build_profile(session, audience)
+    lock = reco_lock_key(audience.key)
 
     if force:
         if acquire and not acquire_lock(lock, settings.reco_lock_ttl_seconds):
-            return TriggerDecision(False, "already_in_flight", profile)
+            return _decline("already_in_flight", profile)
         return TriggerDecision(True, "forced", profile, lock_key=lock if acquire else None)
 
     # Gate 1 — do we know anything at all about this person?
     if profile.event_count < settings.reco_min_events:
-        return TriggerDecision(False, "insufficient_activity", profile)
+        return _decline("insufficient_activity", profile)
 
-    existing = current_recommendation(session, user_id)
-    cached_signature = cache_get_json(reco_signature_key(user_id))
+    existing = current_recommendation(session, audience)
+    cached_signature = cache_get_json(reco_signature_key(audience.key))
     last_signature = cached_signature or (existing.signature_hash if existing else None)
 
     # Hard short-circuit — nothing changed, so reuse what we already generated.
     if existing is not None and last_signature == profile.signature:
-        return TriggerDecision(
-            False, "signature_unchanged", profile, serve_cached=True
-        )
+        return _decline("signature_unchanged", profile, serve_cached=True)
 
     # Gate 2 — is there enough new signal to justify the call?
     signature_changed = existing is not None and last_signature != profile.signature
     if profile.score < settings.reco_score_threshold and not signature_changed:
-        return TriggerDecision(False, "below_threshold", profile)
+        return _decline("below_threshold", profile)
 
     # Gate 3 — don't regenerate more often than the cooldown allows.
-    if cache_get_json(reco_cooldown_key(user_id)):
-        return TriggerDecision(False, "cooldown", profile, serve_cached=existing is not None)
+    if cache_get_json(reco_cooldown_key(audience.key)):
+        return _decline("cooldown", profile, serve_cached=existing is not None)
     if existing is not None and _within_cooldown(existing):
-        return TriggerDecision(False, "cooldown", profile, serve_cached=True)
+        return _decline("cooldown", profile, serve_cached=True)
 
     # Gate 4 — single-flight.
     if acquire and not acquire_lock(lock, settings.reco_lock_ttl_seconds):
-        return TriggerDecision(False, "already_in_flight", profile, serve_cached=existing is not None)
+        return _decline("already_in_flight", profile, serve_cached=existing is not None)
 
     reason = "signature_changed" if signature_changed else "score_threshold"
     logger.info(
-        "Recommendation trigger fired for user=%s reason=%s score=%d events=%d",
-        user_id, reason, profile.score, profile.event_count,
+        "Recommendation trigger fired for %s reason=%s score=%d events=%d",
+        audience.key, reason, profile.score, profile.event_count,
     )
     return TriggerDecision(True, reason, profile, lock_key=lock if acquire else None)
 
@@ -244,11 +270,13 @@ def _within_cooldown(recommendation: Recommendation) -> bool:
     return age < settings.reco_cooldown_seconds
 
 
-def mark_generated(user_id: int, signature: str) -> None:
+def mark_generated(audience: Audience, signature: str) -> None:
     """Start the cooldown and remember the signature we just generated for."""
-    cache_set_json(reco_signature_key(user_id), signature, settings.reco_behavior_window_hours * 3600)
-    cache_set_json(reco_cooldown_key(user_id), True, settings.reco_cooldown_seconds)
+    cache_set_json(
+        reco_signature_key(audience.key), signature, settings.reco_behavior_window_hours * 3600
+    )
+    cache_set_json(reco_cooldown_key(audience.key), True, settings.reco_cooldown_seconds)
 
 
-def clear_lock(user_id: int) -> None:
-    release_lock(reco_lock_key(user_id))
+def clear_lock(audience: Audience) -> None:
+    release_lock(reco_lock_key(audience.key))
